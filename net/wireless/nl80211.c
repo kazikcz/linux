@@ -5764,12 +5764,18 @@ static int nl80211_channel_switch(struct sk_buff *skb, struct genl_info *info)
 	struct cfg80211_registered_device *rdev = info->user_ptr[0];
 	struct net_device *dev = info->user_ptr[1];
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
-	struct cfg80211_csa_settings params;
-	/* csa_attrs is defined static to avoid waste of stack size - this
+	/* static variables avoid waste of stack size - this
 	 * function is called under RTNL lock, so this should not be a problem.
 	 */
 	static struct nlattr *csa_attrs[NL80211_ATTR_MAX+1];
-	u8 radar_detect_width = 0;
+	static struct nlattr *next_attrs[NL80211_ATTR_MAX+1];
+	static struct cfg80211_csa_settings
+			all_params[CFG80211_MAX_NUM_CSA_SETTINGS] = {};
+	static struct cfg80211_iftype_chan_param
+			all_ifch_params[CFG80211_MAX_NUM_CSA_SETTINGS] = {};
+	struct cfg80211_csa_settings *params = &all_params[0];
+	struct cfg80211_iftype_chan_param *ifch_params = &all_ifch_params[0];
+	struct nlattr **attrs, *next_csa;
 	int err;
 	bool need_new_beacon = false;
 
@@ -5777,110 +5783,184 @@ static int nl80211_channel_switch(struct sk_buff *skb, struct genl_info *info)
 	    !(rdev->wiphy.flags & WIPHY_FLAG_HAS_CHANNEL_SWITCH))
 		return -EOPNOTSUPP;
 
+	attrs = info->attrs;
+
+again:
+	if (!attrs[NL80211_ATTR_IFINDEX]) {
+		err = -EINVAL;
+		goto out;
+	}
+
+	dev = dev_get_by_index(genl_info_net(info),
+			       nla_get_u32(attrs[NL80211_ATTR_IFINDEX]));
+	if (!dev) {
+		err = -EINVAL;
+		goto out;
+	}
+
+	params->dev = dev;
+	wdev = dev->ieee80211_ptr;
+	if (!wdev) {
+		err = -EINVAL;
+		goto out;
+	}
+
+	if (!netif_running(dev)) {
+		err = -EINVAL;
+		goto out;
+	}
+
 	switch (dev->ieee80211_ptr->iftype) {
 	case NL80211_IFTYPE_AP:
 	case NL80211_IFTYPE_P2P_GO:
 		need_new_beacon = true;
 
 		/* useless if AP is not running */
-		if (!wdev->beacon_interval)
-			return -EINVAL;
+		if (!wdev->beacon_interval) {
+			err = -EINVAL;
+			goto out;
+		}
 		break;
 	case NL80211_IFTYPE_ADHOC:
 	case NL80211_IFTYPE_MESH_POINT:
 		break;
 	default:
-		return -EOPNOTSUPP;
+		err = -EOPNOTSUPP;
+		goto out;
 	}
 
-	memset(&params, 0, sizeof(params));
-
-	if (!info->attrs[NL80211_ATTR_WIPHY_FREQ] ||
-	    !info->attrs[NL80211_ATTR_CH_SWITCH_COUNT])
-		return -EINVAL;
+	if (!attrs[NL80211_ATTR_WIPHY_FREQ] ||
+	    !attrs[NL80211_ATTR_CH_SWITCH_COUNT]) {
+		err = -EINVAL;
+		goto out;
+	}
 
 	/* only important for AP, IBSS and mesh create IEs internally */
-	if (need_new_beacon && !info->attrs[NL80211_ATTR_CSA_IES])
-		return -EINVAL;
+	if (need_new_beacon && !attrs[NL80211_ATTR_CSA_IES]) {
+		err = -EINVAL;
+		goto out;
+	}
 
-	params.count = nla_get_u32(info->attrs[NL80211_ATTR_CH_SWITCH_COUNT]);
+	params->count = nla_get_u32(attrs[NL80211_ATTR_CH_SWITCH_COUNT]);
 
 	if (!need_new_beacon)
 		goto skip_beacons;
 
-	err = nl80211_parse_beacon(info->attrs, &params.beacon_after);
+	err = nl80211_parse_beacon(attrs, &params->beacon_after);
 	if (err)
-		return err;
+		goto out;
 
 	err = nla_parse_nested(csa_attrs, NL80211_ATTR_MAX,
-			       info->attrs[NL80211_ATTR_CSA_IES],
+			       attrs[NL80211_ATTR_CSA_IES],
 			       nl80211_policy);
 	if (err)
-		return err;
+		goto out;
 
-	err = nl80211_parse_beacon(csa_attrs, &params.beacon_csa);
+	err = nl80211_parse_beacon(csa_attrs, &params->beacon_csa);
 	if (err)
-		return err;
+		goto out;
 
-	if (!csa_attrs[NL80211_ATTR_CSA_C_OFF_BEACON])
-		return -EINVAL;
+	if (!csa_attrs[NL80211_ATTR_CSA_C_OFF_BEACON]) {
+		err = -EINVAL;
+		goto out;
+	}
 
-	params.counter_offset_beacon =
+	params->counter_offset_beacon =
 		nla_get_u16(csa_attrs[NL80211_ATTR_CSA_C_OFF_BEACON]);
-	if (params.counter_offset_beacon >= params.beacon_csa.tail_len)
-		return -EINVAL;
+	if (params->counter_offset_beacon >= params->beacon_csa.tail_len) {
+		err = -EINVAL;
+		goto out;
+	}
 
 	/* sanity check - counters should be the same */
-	if (params.beacon_csa.tail[params.counter_offset_beacon] !=
-	    params.count)
-		return -EINVAL;
+	if (params->beacon_csa.tail[params->counter_offset_beacon] !=
+	    params->count) {
+		err = -EINVAL;
+		goto out;
+	}
 
 	if (csa_attrs[NL80211_ATTR_CSA_C_OFF_PRESP]) {
-		params.counter_offset_presp =
+		params->counter_offset_presp =
 			nla_get_u16(csa_attrs[NL80211_ATTR_CSA_C_OFF_PRESP]);
-		if (params.counter_offset_presp >=
-		    params.beacon_csa.probe_resp_len)
-			return -EINVAL;
+		if (params->counter_offset_presp >=
+		    params->beacon_csa.probe_resp_len) {
+			err = -EINVAL;
+			goto out;
+		}
 
-		if (params.beacon_csa.probe_resp[params.counter_offset_presp] !=
-		    params.count)
-			return -EINVAL;
+		if (params->beacon_csa.probe_resp[params->counter_offset_presp] !=
+		    params->count) {
+			err = -EINVAL;
+			goto out;
+		}
 	}
 
 skip_beacons:
-	err = nl80211_parse_chandef(rdev, info->attrs, &params.chandef);
+	err = nl80211_parse_chandef(rdev, attrs, &params->chandef);
 	if (err)
-		return err;
+		goto out;
 
-	if (!cfg80211_reg_can_beacon(&rdev->wiphy, &params.chandef))
-		return -EINVAL;
+	if (!cfg80211_reg_can_beacon(&rdev->wiphy, &params->chandef)) {
+		err = -EINVAL;
+		goto out;
+	}
 
 	if (dev->ieee80211_ptr->iftype == NL80211_IFTYPE_AP ||
 	    dev->ieee80211_ptr->iftype == NL80211_IFTYPE_P2P_GO ||
 	    dev->ieee80211_ptr->iftype == NL80211_IFTYPE_ADHOC) {
 		err = cfg80211_chandef_dfs_required(wdev->wiphy,
-						    &params.chandef);
+						    &params->chandef);
 		if (err < 0) {
-			return err;
+			err = -EINVAL;
+			goto out;
 		} else if (err) {
-			radar_detect_width = BIT(params.chandef.width);
-			params.radar_required = true;
+			params->radar_required = true;
 		}
 	}
 
-	err = cfg80211_can_use_iftype_chan(rdev, wdev, wdev->iftype,
-					   params.chandef.chan,
-					   CHAN_MODE_SHARED,
-					   radar_detect_width);
+	if (attrs[NL80211_ATTR_CH_SWITCH_BLOCK_TX])
+		params->block_tx = true;
+
+	ifch_params->wdev = wdev;
+	ifch_params->iftype = wdev->iftype;
+	ifch_params->chan = params->chandef.chan;
+	ifch_params->chanmode = CHAN_MODE_SHARED;
+	ifch_params->radar_detect_width = params->radar_required
+					? BIT(params->chandef.width)
+					: 0;
+	ifch_params++;
+	params++;
+
+	next_csa = attrs[NL80211_ATTR_CH_SWITCH_NEXT];
+	if (next_csa) {
+		memset(next_attrs, 0, sizeof(next_attrs));
+
+		if (params - all_params >= ARRAY_SIZE(all_params)) {
+			err = -ENOMEM;
+			goto out;
+		}
+
+		err = nla_parse_nested(next_attrs, NL80211_ATTR_MAX, next_csa,
+				       nl80211_policy);
+		if (err)
+			goto out;
+
+		attrs = next_attrs;
+		goto again;
+	}
+
+	err = cfg80211_can_use_iftype_chan_params(rdev, all_ifch_params,
+						  ifch_params -
+						  all_ifch_params);
 	if (err)
-		return err;
+		goto out;
 
-	if (info->attrs[NL80211_ATTR_CH_SWITCH_BLOCK_TX])
-		params.block_tx = true;
+	err = rdev_channel_switch(rdev, all_params, params - all_params);
 
-	wdev_lock(wdev);
-	err = rdev_channel_switch(rdev, dev, &params);
-	wdev_unlock(wdev);
+out:
+	for (; params - all_params >= 0; params--)
+		if (params->dev)
+			dev_put(params->dev);
 
 	return err;
 }
@@ -9893,7 +9973,7 @@ static const struct genl_ops nl80211_ops[] = {
 		.doit = nl80211_channel_switch,
 		.policy = nl80211_policy,
 		.flags = GENL_ADMIN_PERM,
-		.internal_flags = NL80211_FLAG_NEED_NETDEV_UP |
+		.internal_flags = NL80211_FLAG_NEED_WIPHY |
 				  NL80211_FLAG_NEED_RTNL,
 	},
 	{
