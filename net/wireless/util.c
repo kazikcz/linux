@@ -1255,7 +1255,7 @@ int cfg80211_can_use_iftype_chan(struct cfg80211_registered_device *rdev,
 				 enum nl80211_iftype iftype,
 				 struct ieee80211_channel *chan,
 				 enum cfg80211_chan_mode chanmode,
-				 u8 radar_detect)
+				 u8 radar_detect_width)
 {
 	struct wireless_dev *wdev_iter;
 	u32 used_iftypes = BIT(iftype);
@@ -1271,7 +1271,7 @@ int cfg80211_can_use_iftype_chan(struct cfg80211_registered_device *rdev,
 
 	ASSERT_RTNL();
 
-	if (WARN_ON(hweight32(radar_detect) > 1))
+	if (WARN_ON(hweight32(radar_detect_width) > 1))
 		return -EINVAL;
 
 	switch (iftype) {
@@ -1285,7 +1285,7 @@ int cfg80211_can_use_iftype_chan(struct cfg80211_registered_device *rdev,
 		 * then mark DFS as required.
 		 */
 		if (!chan) {
-			if (chanmode != CHAN_MODE_UNDEFINED && radar_detect)
+			if (chanmode != CHAN_MODE_UNDEFINED && radar_detect_width)
 				radar_required = true;
 			break;
 		}
@@ -1302,12 +1302,12 @@ int cfg80211_can_use_iftype_chan(struct cfg80211_registered_device *rdev,
 		return -EINVAL;
 	}
 
-	if (radar_required && !radar_detect)
+	if (radar_required && !radar_detect_width)
 		return -EINVAL;
 
 	/* Always allow software iftypes */
 	if (rdev->wiphy.software_iftypes & BIT(iftype)) {
-		if (radar_detect)
+		if (radar_detect_width)
 			return -EINVAL;
 		return 0;
 	}
@@ -1383,7 +1383,7 @@ int cfg80211_can_use_iftype_chan(struct cfg80211_registered_device *rdev,
 		used_iftypes |= BIT(wdev_iter->iftype);
 	}
 
-	if (total == 1 && !radar_detect)
+	if (total == 1 && !radar_detect_width)
 		return 0;
 
 	for (i = 0; i < rdev->wiphy.n_iface_combinations; i++) {
@@ -1416,7 +1416,7 @@ int cfg80211_can_use_iftype_chan(struct cfg80211_registered_device *rdev,
 			}
 		}
 
-		if (radar_detect && !(c->radar_detect_widths & radar_detect))
+		if (radar_detect_width && !(c->radar_detect_widths & radar_detect_width))
 			goto cont;
 
 		/*

@@ -377,7 +377,7 @@ int cfg80211_can_use_iftype_chan(struct cfg80211_registered_device *rdev,
 				 enum nl80211_iftype iftype,
 				 struct ieee80211_channel *chan,
 				 enum cfg80211_chan_mode chanmode,
-				 u8 radar_detect);
+				 u8 radar_detect_width);
 
 /**
  * cfg80211_chandef_dfs_usable - checks if chandef is DFS usable
