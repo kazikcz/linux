@@ -3040,7 +3040,9 @@ void ieee80211_csa_finalize_work(struct work_struct *work)
 			goto unlock;
 		break;
 	case NL80211_IFTYPE_ADHOC:
-		ieee80211_ibss_finish_csa(sdata);
+		err = ieee80211_ibss_finish_csa(sdata);
+		if (err < 0)
+			goto unlock;
 		break;
 #ifdef CONFIG_MAC80211_MESH
 	case NL80211_IFTYPE_MESH_POINT:
