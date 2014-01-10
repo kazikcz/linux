@@ -2405,7 +2405,7 @@ void ieee80211_csa_finish(struct ieee80211_vif *vif)
 	struct ieee80211_sub_if_data *sdata = vif_to_sdata(vif);
 
 	ieee80211_queue_work(&sdata->local->hw,
-			     &sdata->csa_finalize_work);
+			     &sdata->csa_complete_work);
 }
 EXPORT_SYMBOL(ieee80211_csa_finish);
 
@@ -2437,9 +2437,13 @@ static void ieee80211_update_csa(struct ieee80211_sub_if_data *sdata,
 	if (WARN_ON(counter_offset_beacon >= beacon_data_len))
 		return;
 
-	/* warn if the driver did not check for/react to csa completeness */
-	if (WARN_ON(beacon_data[counter_offset_beacon] == 0))
+	if (beacon_data[counter_offset_beacon] == 0) {
+		/* warn if the driver did not check for/react to csa
+		 * completeness. keep in mind that for multi-interface csa some
+		 * BSSes may need to wait for others to complete */
+		WARN_ON(!sdata->csa_complete);
 		return;
+	}
 
 	beacon_data[counter_offset_beacon]--;
 
