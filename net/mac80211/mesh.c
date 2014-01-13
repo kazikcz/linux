@@ -865,6 +865,9 @@ ieee80211_mesh_process_chnswitch(struct ieee80211_sub_if_data *sdata,
 	int err, num_chanctx;
 	u32 sta_flags;
 
+	sdata_assert_lock(sdata);
+	lockdep_assert_held(&sdata->local->mtx);
+
 	if (sdata->vif.csa_active)
 		return true;
 
@@ -967,6 +970,7 @@ ieee80211_mesh_process_chnswitch(struct ieee80211_sub_if_data *sdata,
 				IEEE80211_QUEUE_STOP_REASON_CSA);
 
 	sdata->csa_chandef = params.chandef;
+
 	sdata->vif.csa_active = true;
 
 	ieee80211_bss_info_change_notify(sdata, err);
@@ -1085,8 +1089,10 @@ static void ieee80211_mesh_rx_bcn_presp(struct ieee80211_sub_if_data *sdata,
 		ifmsh->sync_ops->rx_bcn_presp(sdata,
 			stype, mgmt, &elems, rx_status);
 
+	mutex_lock(&sdata->local->mtx);
 	if (!ifmsh->chsw_init)
 		ieee80211_mesh_process_chnswitch(sdata, &elems, true);
+	mutex_unlock(&sdata->local->mtx);
 }
 
 int ieee80211_mesh_finish_csa(struct ieee80211_sub_if_data *sdata)
@@ -1189,6 +1195,7 @@ static void mesh_rx_csa_frame(struct ieee80211_sub_if_data *sdata,
 	bool fwd_csa = true;
 	size_t baselen;
 	u8 *pos;
+	int err;
 
 	if (mgmt->u.action.u.measurement.action_code !=
 	    WLAN_ACTION_SPCT_CHL_SWITCH)
@@ -1209,7 +1216,11 @@ static void mesh_rx_csa_frame(struct ieee80211_sub_if_data *sdata,
 
 	ifmsh->pre_value = pre_value;
 
-	if (!ieee80211_mesh_process_chnswitch(sdata, &elems, false)) {
+	mutex_lock(&sdata->local->mtx);
+	err = ieee80211_mesh_process_chnswitch(sdata, &elems, false);
+	mutex_unlock(&sdata->local->mtx);
+
+	if (!err) {
 		mcsa_dbg(sdata, "Failed to process CSA action frame");
 		return;
 	}

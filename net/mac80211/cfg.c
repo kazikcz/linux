@@ -1052,6 +1052,7 @@ static int ieee80211_change_beacon(struct wiphy *wiphy, struct net_device *dev,
 	int err;
 
 	sdata = IEEE80211_DEV_TO_SUB_IF(dev);
+	sdata_assert_lock(sdata);
 
 	/* don't allow changing the beacon while CSA is in place - offset
 	 * of channel switch counter may change
@@ -1079,15 +1080,19 @@ static int ieee80211_stop_ap(struct wiphy *wiphy, struct net_device *dev)
 	struct probe_resp *old_probe_resp;
 	struct cfg80211_chan_def chandef;
 
+	sdata_assert_lock(sdata);
+
 	old_beacon = sdata_dereference(sdata->u.ap.beacon, sdata);
 	if (!old_beacon)
 		return -ENOENT;
 	old_probe_resp = sdata_dereference(sdata->u.ap.probe_resp, sdata);
 
 	/* abort any running channel switch */
+	mutex_lock(&local->mtx);
 	sdata->vif.csa_active = false;
 	kfree(sdata->u.ap.next_beacon);
 	sdata->u.ap.next_beacon = NULL;
+	mutex_unlock(&local->mtx);
 
 	cancel_work_sync(&sdata->u.ap.request_smps_work);
 
@@ -2991,6 +2996,8 @@ static int ieee80211_ap_finish_csa(struct ieee80211_sub_if_data *sdata)
 {
 	int err;
 
+	lockdep_assert_held(&sdata->local->mtx);
+
 	err = ieee80211_assign_beacon(sdata, sdata->u.ap.next_beacon);
 	kfree(sdata->u.ap.next_beacon);
 	sdata->u.ap.next_beacon = NULL;
@@ -3011,6 +3018,7 @@ void ieee80211_csa_finalize_work(struct work_struct *work)
 	int err, changed = 0;
 
 	sdata_lock(sdata);
+	mutex_lock(&local->mtx);
 	/* AP might have been stopped while waiting for the lock. */
 	if (!sdata->vif.csa_active)
 		goto unlock;
@@ -3018,10 +3026,9 @@ void ieee80211_csa_finalize_work(struct work_struct *work)
 	if (!ieee80211_sdata_running(sdata))
 		goto unlock;
 
-	mutex_lock(&local->mtx);
 	sdata->radar_required = sdata->csa_radar_required;
+
 	err = ieee80211_vif_change_channel(sdata, &changed);
-	mutex_unlock(&local->mtx);
 	if (WARN_ON(err < 0))
 		goto unlock;
 
@@ -3063,6 +3070,7 @@ void ieee80211_csa_finalize_work(struct work_struct *work)
 	cfg80211_ch_switch_notify(sdata->dev, &sdata->csa_chandef);
 
 unlock:
+	mutex_unlock(&local->mtx);
 	sdata_unlock(sdata);
 }
 
@@ -3076,7 +3084,8 @@ int __ieee80211_channel_switch(struct wiphy *wiphy, struct net_device *dev,
 	struct ieee80211_if_mesh __maybe_unused *ifmsh;
 	int err, num_chanctx;
 
-	lockdep_assert_held(&sdata->wdev.mtx);
+	sdata_assert_lock(sdata);
+	lockdep_assert_held(&local->mtx);
 
 	if (!list_empty(&local->roc_list) || local->scanning)
 		return -EBUSY;
@@ -3219,8 +3228,11 @@ int ieee80211_channel_switch(struct wiphy *wiphy,
 		return -EOPNOTSUPP;
 
 	sdata = IEEE80211_DEV_TO_SUB_IF(params[0].dev);
+
 	sdata_lock(sdata);
+	mutex_lock(&sdata->local->mtx);
 	err = __ieee80211_channel_switch(wiphy, params[0].dev, &params[0]);
+	mutex_unlock(&sdata->local->mtx);
 	sdata_unlock(sdata);
 
 	return err;
