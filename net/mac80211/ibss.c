@@ -295,16 +295,21 @@ static void __ieee80211_sta_join_ibss(struct ieee80211_sub_if_data *sdata,
 
 	mutex_lock(&local->mtx);
 	ieee80211_vif_release_channel(sdata);
-	if (ieee80211_vif_use_channel(sdata, &chandef,
-				      ifibss->fixed_channel ?
-					IEEE80211_CHANCTX_SHARED :
-					IEEE80211_CHANCTX_EXCLUSIVE)) {
-		sdata_info(sdata, "Failed to join IBSS, no channel context\n");
-		mutex_unlock(&local->mtx);
-		return;
-	}
+	if (ieee80211_is_csa_active(local))
+		err = -EBUSY;
+	else
+		err = ieee80211_vif_use_channel(sdata, &chandef,
+						ifibss->fixed_channel ?
+						IEEE80211_CHANCTX_SHARED :
+						IEEE80211_CHANCTX_EXCLUSIVE);
+
 	sdata->radar_required = radar_required;
 	mutex_unlock(&local->mtx);
+
+	if (err) {
+		sdata_info(sdata, "Failed to join IBSS, no channel context\n");
+		return;
+	}
 
 	memcpy(ifibss->bssid, bssid, ETH_ALEN);
 
@@ -807,6 +812,9 @@ ieee80211_ibss_process_chanswitch(struct ieee80211_sub_if_data *sdata,
 
 	if (sdata->vif.csa_active)
 		return true;
+
+	if (ieee80211_is_csa_active(sdata->local))
+		return false;
 
 	sta_flags = IEEE80211_STA_DISABLE_VHT;
 	switch (ifibss->chandef.width) {

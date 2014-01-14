@@ -871,6 +871,9 @@ ieee80211_mesh_process_chnswitch(struct ieee80211_sub_if_data *sdata,
 	if (sdata->vif.csa_active)
 		return true;
 
+	if (ieee80211_is_csa_active(sdata->local))
+		return false;
+
 	if (!ifmsh->mesh_id)
 		return false;
 

@@ -3691,6 +3691,12 @@ static int ieee80211_prep_channel(struct ieee80211_sub_if_data *sdata,
 	sdata->smps_mode = IEEE80211_SMPS_OFF;
 
 	mutex_lock(&local->mtx);
+
+	if (ieee80211_is_csa_active(local)) {
+		ret = -EBUSY;
+		goto out;
+	}
+
 	/*
 	 * If this fails (possibly due to channel context sharing
 	 * on incompatible channels, e.g. 80+80 and 160 sharing the

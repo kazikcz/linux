@@ -438,8 +438,11 @@ int ieee80211_add_virtual_monitor(struct ieee80211_local *local)
 	}
 
 	mutex_lock(&local->mtx);
-	ret = ieee80211_vif_use_channel(sdata, &local->monitor_chandef,
-					IEEE80211_CHANCTX_EXCLUSIVE);
+	if (ieee80211_is_csa_active(local))
+		ret = -EBUSY;
+	else
+		ret = ieee80211_vif_use_channel(sdata, &local->monitor_chandef,
+						IEEE80211_CHANCTX_EXCLUSIVE);
 	mutex_unlock(&local->mtx);
 	if (ret) {
 		drv_remove_interface(local, sdata);

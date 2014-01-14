@@ -973,8 +973,12 @@ static int ieee80211_start_ap(struct wiphy *wiphy, struct net_device *dev,
 
 	mutex_lock(&local->mtx);
 	sdata->radar_required = params->radar_required;
-	err = ieee80211_vif_use_channel(sdata, &params->chandef,
-					IEEE80211_CHANCTX_SHARED);
+
+	if (ieee80211_is_csa_active(local))
+		err = -EBUSY;
+	else
+		err = ieee80211_vif_use_channel(sdata, &params->chandef,
+						IEEE80211_CHANCTX_SHARED);
 	mutex_unlock(&local->mtx);
 	if (err)
 		return err;
@@ -1957,8 +1961,11 @@ static int ieee80211_join_mesh(struct wiphy *wiphy, struct net_device *dev,
 	sdata->needed_rx_chains = sdata->local->rx_chains;
 
 	mutex_lock(&sdata->local->mtx);
-	err = ieee80211_vif_use_channel(sdata, &setup->chandef,
-					IEEE80211_CHANCTX_SHARED);
+	if (ieee80211_is_csa_active(sdata->local))
+		err = -EBUSY;
+	else
+		err = ieee80211_vif_use_channel(sdata, &setup->chandef,
+						IEEE80211_CHANCTX_SHARED);
 	mutex_unlock(&sdata->local->mtx);
 	if (err)
 		return err;
@@ -2644,7 +2651,8 @@ static int ieee80211_start_roc_work(struct ieee80211_local *local,
 
 	/* if there's one pending or we're scanning, queue this one */
 	if (!list_empty(&local->roc_list) ||
-	    local->scanning || local->radar_detect_enabled)
+	    local->scanning || local->radar_detect_enabled ||
+	    ieee80211_is_csa_active(local))
 		goto out_check_combine;
 
 	/* if not HW assist, just queue & schedule work */
@@ -2912,7 +2920,8 @@ static int ieee80211_start_radar_detection(struct wiphy *wiphy,
 	int err;
 
 	mutex_lock(&local->mtx);
-	if (!list_empty(&local->roc_list) || local->scanning) {
+	if (!list_empty(&local->roc_list) || local->scanning ||
+	    ieee80211_is_csa_active(local)) {
 		err = -EBUSY;
 		goto out_unlock;
 	}
@@ -3087,7 +3096,8 @@ int __ieee80211_channel_switch(struct wiphy *wiphy, struct net_device *dev,
 	sdata_assert_lock(sdata);
 	lockdep_assert_held(&local->mtx);
 
-	if (!list_empty(&local->roc_list) || local->scanning)
+	if (!list_empty(&local->roc_list) || local->scanning ||
+	    ieee80211_is_csa_active(local))
 		return -EBUSY;
 
 	if (sdata->wdev.cac_started)
@@ -3097,23 +3107,23 @@ int __ieee80211_channel_switch(struct wiphy *wiphy, struct net_device *dev,
 				       &sdata->vif.bss_conf.chandef))
 		return -EINVAL;
 
-	rcu_read_lock();
+	mutex_lock(&local->chanctx_mtx);
 	chanctx_conf = rcu_dereference(sdata->vif.chanctx_conf);
 	if (!chanctx_conf) {
-		rcu_read_unlock();
+		mutex_unlock(&local->chanctx_mtx);
 		return -EBUSY;
 	}
 
 	/* don't handle for multi-VIF cases */
 	chanctx = container_of(chanctx_conf, struct ieee80211_chanctx, conf);
 	if (chanctx->refcount > 1) {
-		rcu_read_unlock();
+		mutex_unlock(&local->chanctx_mtx);
 		return -EBUSY;
 	}
 	num_chanctx = 0;
-	list_for_each_entry_rcu(chanctx, &local->chanctx_list, list)
+	list_for_each_entry(chanctx, &local->chanctx_list, list)
 		num_chanctx++;
-	rcu_read_unlock();
+	mutex_unlock(&local->chanctx_mtx);
 
 	if (num_chanctx > 1)
 		return -EBUSY;
