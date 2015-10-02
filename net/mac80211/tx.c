@@ -1266,7 +1266,13 @@ static void ieee80211_drv_tx(struct ieee80211_local *local,
 	if (atomic_read(&sdata->txqs_len[ac]) >= local->hw.txq_ac_max_pending)
 		netif_stop_subqueue(sdata->dev, ac);
 
-	skb_queue_tail(&txqi->queue, skb);
+	spin_lock_bh(&txqi->queue.lock);
+	txq->qdepth++;
+	txq->qsize += skb->len;
+
+	__skb_queue_tail(&txqi->queue, skb);
+	spin_unlock_bh(&txqi->queue.lock);
+
 	drv_wake_tx_queue(local, txqi);
 
 	return;
@@ -1293,6 +1299,9 @@ struct sk_buff *ieee80211_tx_dequeue(struct ieee80211_hw *hw,
 	skb = __skb_dequeue(&txqi->queue);
 	if (!skb)
 		goto out;
+
+	txq->qdepth--;
+	txq->qsize -= skb->len;
 
 	atomic_dec(&sdata->txqs_len[ac]);
 	if (__netif_subqueue_stopped(sdata->dev, ac))

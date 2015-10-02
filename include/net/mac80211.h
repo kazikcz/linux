@@ -1781,6 +1781,8 @@ struct ieee80211_tx_control {
  *
  * @vif: &struct ieee80211_vif pointer from the add_interface callback.
  * @sta: station table entry, %NULL for per-vif queue
+ * @qdepth: number of pending frames
+ * @qsize: number of pending bytes
  * @tid: the TID for this queue (unused for per-vif queue)
  * @ac: the AC for this queue
  * @drv_priv: driver private area, sized by hw->txq_data_size
@@ -1791,6 +1793,8 @@ struct ieee80211_tx_control {
 struct ieee80211_txq {
 	struct ieee80211_vif *vif;
 	struct ieee80211_sta *sta;
+	int qdepth;
+	int qsize;
 	u8 tid;
 	u8 ac;
 
