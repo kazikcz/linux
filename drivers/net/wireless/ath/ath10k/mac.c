@@ -3710,6 +3710,88 @@ static void ath10k_mac_tx_wake(struct ieee80211_hw *hw,
 	ath10k_htt_tx_txq_update(hw, txq);
 }
 
+struct ath10k_mac_tx_push_arg {
+	struct ieee80211_hw *hw;
+	bool more;
+};
+
+static void ath10k_mac_tx_push_pending_txq(struct ieee80211_hw *hw,
+					   struct ieee80211_txq *txq,
+					   struct ath10k_mac_tx_push_arg *arg)
+{
+	bool can_push;
+	bool has_more;
+	int ret;
+
+	if (!txq)
+		return;
+
+	while (txq->qdepth > 0) {
+		if (!ath10k_mac_tx_can_push(hw, txq))
+			break;
+
+		ret = ath10k_mac_tx_push_txq(hw, txq);
+		if (ret)
+			break;
+	}
+
+	can_push = ath10k_mac_tx_can_push(hw, txq);
+	has_more = txq->qdepth > 0;
+
+	if (can_push && has_more)
+		arg->more = true;
+}
+
+static void ath10k_mac_tx_push_pending_vif_iter(void *data,
+						u8 *mac,
+						struct ieee80211_vif *vif)
+{
+	struct ath10k_mac_tx_push_arg *arg = data;
+	struct ieee80211_hw *hw = arg->hw;
+
+	ath10k_mac_tx_push_pending_txq(hw, vif->txq, arg);
+}
+
+static void ath10k_mac_tx_push_pending_sta_iter(void *data,
+						struct ieee80211_sta *sta)
+{
+	struct ath10k_mac_tx_push_arg *arg = data;
+	struct ieee80211_hw *hw = arg->hw;
+	int tid;
+
+	for (tid = 0; tid < ARRAY_SIZE(sta->txq); tid++)
+		ath10k_mac_tx_push_pending_txq(hw, sta->txq[tid], arg);
+}
+
+void ath10k_mac_tx_push_pending(struct ath10k *ar)
+{
+	struct ieee80211_hw *hw = ar->hw;
+	struct ath10k_mac_tx_push_arg arg = {};
+
+	if (likely(!(ar->tx_paused & BIT(ATH10K_TX_PAUSE_Q_FLUSH_PENDING))))
+		return;
+
+	arg.hw = hw;
+	arg.more = false;
+
+	ieee80211_iterate_active_interfaces_atomic(hw,
+						   IEEE80211_IFACE_ITER_NORMAL,
+						   ath10k_mac_tx_push_pending_vif_iter,
+						   &arg);
+	if (arg.more)
+		return;
+
+	ieee80211_iterate_stations_atomic(hw,
+					  ath10k_mac_tx_push_pending_sta_iter,
+					  &arg);
+	if (arg.more)
+		return;
+
+	spin_lock_bh(&ar->htt.tx_lock);
+	ath10k_mac_tx_unlock(ar, ATH10K_TX_PAUSE_Q_FLUSH_PENDING);
+	spin_unlock_bh(&ar->htt.tx_lock);
+}
+
 /************/
 /* Scanning */
 /************/
