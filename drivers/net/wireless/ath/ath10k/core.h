@@ -306,7 +306,7 @@ struct ath10k_peer {
 };
 
 struct ath10k_txq {
-	/* TBD */
+	unsigned long num_fw_queued;
 };
 
 struct ath10k_sta {
