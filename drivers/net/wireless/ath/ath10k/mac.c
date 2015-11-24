@@ -3695,12 +3695,19 @@ static void ath10k_mac_tx_push(struct ieee80211_hw *hw,
 				    txq->vif->addr, ret);
 		return;
 	}
+
+	ath10k_htt_tx_txq_update(hw, txq);
 }
 
 static void ath10k_mac_tx_wake(struct ieee80211_hw *hw,
 			       struct ieee80211_txq *txq)
 {
-	WARN_ON(1); /* TBD */
+	/* TODO: Possible optimization is to defer the updates until a certain
+	 * time/quantity threshold is reached to avoid hammering DMA and
+	 * flushing d-caches for each submitted msdu.
+	 */
+
+	ath10k_htt_tx_txq_update(hw, txq);
 }
 
 /************/
