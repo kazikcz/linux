@@ -304,6 +304,10 @@ struct ath10k_peer {
 	struct ieee80211_key_conf *keys[WMI_MAX_KEY_INDEX + 1];
 };
 
+struct ath10k_txq {
+	/* TBD */
+};
+
 struct ath10k_sta {
 	struct ath10k_vif *arvif;
 
