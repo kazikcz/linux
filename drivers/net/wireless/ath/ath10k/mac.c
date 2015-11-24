@@ -3311,6 +3311,7 @@ static void ath10k_tx_h_add_p2p_noa_ie(struct ath10k *ar,
 
 static void ath10k_mac_tx_h_fill_cb(struct ath10k *ar,
 				    struct ieee80211_vif *vif,
+				    struct ieee80211_txq *txq,
 				    struct sk_buff *skb)
 {
 	struct ieee80211_hdr *hdr = (void *)skb->data;
@@ -3327,6 +3328,7 @@ static void ath10k_mac_tx_h_fill_cb(struct ath10k *ar,
 		cb->flags |= ATH10K_SKB_F_QOS;
 
 	cb->vif = vif;
+	cb->txq = txq;
 }
 
 bool ath10k_mac_tx_frm_has_freq(struct ath10k *ar)
@@ -3660,7 +3662,7 @@ static int ath10k_mac_tx_push_txq(struct ieee80211_hw *hw,
 		return -ENOENT;
 	}
 
-	ath10k_mac_tx_h_fill_cb(ar, vif, skb);
+	ath10k_mac_tx_h_fill_cb(ar, vif, txq, skb);
 
 	txmode = ath10k_mac_tx_h_get_txmode(ar, vif, sta, skb);
 	txpath = ath10k_mac_tx_h_get_txpath(ar, skb, txmode);
@@ -3789,6 +3791,27 @@ void ath10k_mac_tx_push_pending(struct ath10k *ar)
 
 	spin_lock_bh(&ar->htt.tx_lock);
 	ath10k_mac_tx_unlock(ar, ATH10K_TX_PAUSE_Q_FLUSH_PENDING);
+	spin_unlock_bh(&ar->htt.tx_lock);
+}
+
+static void ath10k_mac_txq_unref(struct ath10k *ar,
+				 struct ieee80211_txq *txq)
+{
+	struct ath10k_skb_cb *cb;
+	struct sk_buff *msdu;
+	int msdu_id;
+
+	if (!txq)
+		return;
+
+	spin_lock_bh(&ar->htt.tx_lock);
+
+	idr_for_each_entry(&ar->htt.pending_tx, msdu, msdu_id) {
+		cb = ATH10K_SKB_CB(msdu);
+		if (cb->txq == txq)
+			cb->txq = NULL;
+	}
+
 	spin_unlock_bh(&ar->htt.tx_lock);
 }
 
@@ -3963,6 +3986,7 @@ static void ath10k_mac_op_tx(struct ieee80211_hw *hw,
 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
 	struct ieee80211_vif *vif = info->control.vif;
 	struct ieee80211_sta *sta = control->sta;
+	struct ieee80211_txq *txq = NULL;
 	struct ieee80211_hdr *hdr = (void *)skb->data;
 	enum ath10k_hw_txrx_mode txmode;
 	enum ath10k_mac_tx_path txpath;
@@ -3971,7 +3995,7 @@ static void ath10k_mac_op_tx(struct ieee80211_hw *hw,
 	bool is_presp;
 	int ret;
 
-	ath10k_mac_tx_h_fill_cb(ar, vif, skb);
+	ath10k_mac_tx_h_fill_cb(ar, vif, txq, skb);
 
 	txmode = ath10k_mac_tx_h_get_txmode(ar, vif, sta, skb);
 	txpath = ath10k_mac_tx_h_get_txpath(ar, skb, txmode);
@@ -5010,6 +5034,7 @@ static void ath10k_remove_interface(struct ieee80211_hw *hw,
 	spin_unlock_bh(&ar->data_lock);
 
 	ath10k_peer_cleanup(ar, arvif->vdev_id);
+	ath10k_mac_txq_unref(ar, vif->txq);
 
 	if (vif->type == NL80211_IFTYPE_MONITOR) {
 		ar->monitor_arvif = NULL;
@@ -5871,6 +5896,9 @@ static int ath10k_sta_state(struct ieee80211_hw *hw,
 			}
 		}
 		spin_unlock_bh(&ar->data_lock);
+
+		for (i = 0; i < ARRAY_SIZE(sta->txq); i++)
+			ath10k_mac_txq_unref(ar, sta->txq[i]);
 
 		if (!sta->tdls)
 			goto exit;
