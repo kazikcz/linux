@@ -565,6 +565,16 @@ struct ieee80211_bss_conf {
 	struct ieee80211_p2p_noa_attr p2p_noa_attr;
 };
 
+/*
+ * struct codel_params - contains codel parameters
+ * @interval:	initial drop rate
+ * @target:     maximum persistent sojourn time
+ */
+struct codel_params {
+	u64	interval;
+	u64	target;
+};
+
 /**
  * enum mac80211_tx_info_flags - flags to describe transmission information/status
  *
@@ -853,6 +863,8 @@ ieee80211_rate_get_vht_nss(const struct ieee80211_tx_rate *rate)
  * @band: the band to transmit on (use for checking for races)
  * @hw_queue: HW queue to put the frame on, skb_get_queue_mapping() gives the AC
  * @ack_frame_id: internal frame ID for TX status, used internally
+ * @expected_duration: number of microseconds the stack expects this frame to
+ *	take to tx. Used for fair queuing.
  * @control: union for control data
  * @status: union for status data
  * @driver_data: array of driver_data pointers
@@ -865,11 +877,10 @@ ieee80211_rate_get_vht_nss(const struct ieee80211_tx_rate *rate)
 struct ieee80211_tx_info {
 	/* common information */
 	u32 flags;
-	u8 band;
-
-	u8 hw_queue;
-
-	u16 ack_frame_id;
+	u32 band:2,
+	    hw_queue:5,
+	    ack_frame_id:15,
+	    expected_duration:10;
 
 	union {
 		struct {
@@ -888,8 +899,18 @@ struct ieee80211_tx_info {
 				/* only needed before rate control */
 				unsigned long jiffies;
 			};
-			/* NB: vif can be NULL for injected frames */
-			struct ieee80211_vif *vif;
+			union {
+				/* NB: vif can be NULL for injected frames */
+				struct ieee80211_vif *vif;
+
+				/* When packets are enqueued on txq it's easy
+				 * to re-construct the vif pointer. There's no
+				 * more space in tx_info so it can be used to
+				 * store the necessary enqueue time for packet
+				 * sojourn time computation.
+				 */
+				u64 enqueue_time;
+			};
 			struct ieee80211_key_conf *hw_key;
 			u32 flags;
 			/* 4 bytes free */
@@ -2114,8 +2135,8 @@ enum ieee80211_hw_flags {
  * @cipher_schemes: a pointer to an array of cipher scheme definitions
  *	supported by HW.
  *
- * @txq_ac_max_pending: maximum number of frames per AC pending in all txq
- *	entries for a vif.
+ * @txq_cparams: codel parameters to control tx queueing dropping behavior
+ * @txq_limit: maximum number of frames queuesd
  */
 struct ieee80211_hw {
 	struct ieee80211_conf conf;
@@ -2145,7 +2166,8 @@ struct ieee80211_hw {
 	u8 uapsd_max_sp_len;
 	u8 n_cipher_schemes;
 	const struct ieee80211_cipher_scheme *cipher_schemes;
-	int txq_ac_max_pending;
+	struct codel_params txq_cparams;
+	u32 txq_limit;
 };
 
 static inline bool _ieee80211_hw_check(struct ieee80211_hw *hw,
@@ -5633,6 +5655,9 @@ struct sk_buff *ieee80211_tx_dequeue(struct ieee80211_hw *hw,
  * txq state can change half-way of this function and the caller may end up
  * with "new" frame_cnt and "old" byte_cnt or vice-versa.
  *
+ * Moreover returned values are best-case, i.e. assuming queueing algorithm
+ * will not drop frames due to excess latency.
+ *
  * @txq: pointer obtained from station or virtual interface
  * @frame_cnt: pointer to store frame count
  * @byte_cnt: pointer to store byte count
@@ -5640,4 +5665,55 @@ struct sk_buff *ieee80211_tx_dequeue(struct ieee80211_hw *hw,
 void ieee80211_txq_get_depth(struct ieee80211_txq *txq,
 			     unsigned long *frame_cnt,
 			     unsigned long *byte_cnt);
+
+/**
+ * ieee80211_recalc_fq_period - recalculate fair-queuing period
+ *
+ * This is used to alter the dropping rate to react to possibly changing
+ * (active) station-tid service period and air conditions.
+ *
+ * Driver which implement wake_tx_queue() but don't use ieee80211_tx_schedule()
+ * are encouraged to call this function periodically.
+ *
+* @hw: pointer as obtained from ieee80211_alloc_hw()
+ */
+void ieee80211_recalc_fq_period(struct ieee80211_hw *hw);
+
+/**
+ * ieee80211_tx_schedule - schedule next transmission burst
+ *
+ * This function can be (and should be, preferably) called by drivers that use
+ * wake_tx_queue op. It uses fq-codel like algorithm to maintain fairness.
+ *
+ * This function may call in back to driver (get_expected_throughput op) so
+ * be careful with locking.
+ *
+ * Driver should take care of serializing calls to this functions. Otherwise
+ * fairness can't be guaranteed.
+ *
+ * This function returns the following values:
+ *	-EBUSY		Software queues are not empty yet. The function should
+ *			not be called until after driver's next tx completion.
+ *	-ENOENT		Software queues are empty.
+ *
+ * @hw: pointer as obtained from ieee80211_alloc_hw()
+ * @wake: callback to driver to handle burst for given txq within given (byte)
+ *	budget. The driver is expected to either call ieee80211_tx_dequeue() or
+ *	use its internal queues (if any). The budget should be respected only
+ *	for frames comming from ieee80211_tx_dequeue(). On termination it is
+ *	expected to return number of frames put onto hw queue that were taken
+ *	via ieee80211_tx_dequeue(). Frames from internal retry queues shall not
+ *	be included in the returned count. If hw queues become/are busy/full
+ *	the driver shall return a negative value which will prompt
+ *	ieee80211_tx_schedule() to terminate. If hw queues become full after at
+ *	least 1 frame dequeued via ieee80211_tx_dequeue() was sent the driver
+ *	is free to report either number of sent frames up until that point or a
+ *	negative value. The driver may return 0 if it wants to skip the txq
+ *	(e.g. target station is in powersave).
+ */
+int ieee80211_tx_schedule(struct ieee80211_hw *hw,
+			  int (*wake)(struct ieee80211_hw *hw,
+				      struct ieee80211_txq *txq,
+				      int budget));
+
 #endif /* MAC80211_H */

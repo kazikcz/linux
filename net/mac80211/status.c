@@ -502,6 +502,67 @@ static void ieee80211_report_ack_skb(struct ieee80211_local *local,
 	}
 }
 
+static void ieee80211_report_txq_skb(struct ieee80211_local *local,
+				     struct ieee80211_hdr *hdr,
+				     struct sk_buff *skb)
+{
+	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
+	struct ieee80211_fq *fq = &local->fq;
+	struct ieee80211_sub_if_data *sdata;
+	struct ieee80211_txq *txq = NULL;
+	struct sta_info *sta;
+	struct txq_info *txqi;
+	struct rhash_head *tmp;
+	const struct bucket_table *tbl;
+	int tid;
+	__le16 fc = hdr->frame_control;
+	u8 *addr;
+	static const u8 zeroaddr[ETH_ALEN];
+
+	if (!ieee80211_is_data(fc))
+		return;
+
+	rcu_read_lock();
+
+	tbl = rht_dereference_rcu(local->sta_hash.tbl, &local->sta_hash);
+	for_each_sta_info(local, tbl, hdr->addr1, sta, tmp) {
+		/* skip wrong virtual interface */
+		if (!ether_addr_equal(hdr->addr2, sta->sdata->vif.addr))
+			continue;
+
+		tid = skb->priority & IEEE80211_QOS_CTL_TID_MASK;
+		txq = sta->sta.txq[tid];
+
+		break;
+	}
+
+	if (!txq) {
+		addr = ieee80211_get_DA(hdr);
+		if (is_multicast_ether_addr(addr)) {
+			sdata = ieee80211_sdata_from_skb(local, skb);
+			txq = sdata->vif.txq;
+		}
+	}
+
+	if (txq) {
+		txqi = container_of(txq, struct txq_info, txq);
+		atomic_sub(info->expected_duration, &txqi->in_flight_usec);
+		if (atomic_read(&txqi->in_flight_usec) < 0) {
+			WARN_ON_ONCE(1);
+			print_hex_dump(KERN_DEBUG, "skb: ", DUMP_PREFIX_OFFSET, 16, 1,
+						skb->data, skb->len, 0);
+			printk("underflow: txq tid %d sta %pM vif %s\n",
+					txq->tid,
+					txq->sta ? txq->sta->addr : zeroaddr,
+					container_of(txq->vif, struct ieee80211_sub_if_data, vif)->name);
+		}
+	}
+
+	atomic_sub(info->expected_duration, &fq->in_flight_usec);
+
+	rcu_read_unlock();
+}
+
 static void ieee80211_report_used_skb(struct ieee80211_local *local,
 				      struct sk_buff *skb, bool dropped)
 {
@@ -511,6 +572,9 @@ static void ieee80211_report_used_skb(struct ieee80211_local *local,
 
 	if (dropped)
 		acked = false;
+
+	if (local->ops->wake_tx_queue)
+		ieee80211_report_txq_skb(local, hdr, skb);
 
 	if (info->flags & IEEE80211_TX_INTFL_MLME_CONN_TX) {
 		struct ieee80211_sub_if_data *sdata;

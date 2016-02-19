@@ -19,6 +19,7 @@
 #include <linux/etherdevice.h>
 #include <linux/rhashtable.h>
 #include "key.h"
+#include "codel_i.h"
 
 /**
  * enum ieee80211_sta_info_flags - Stations flags
@@ -329,6 +330,32 @@ struct mesh_sta {
 };
 
 DECLARE_EWMA(signal, 1024, 8)
+
+struct txq_info;
+
+/**
+ * struct txq_flow - per traffic flow queue
+ *
+ * This structure is used to distinguish and queue different traffic flows
+ * separately for fair queueing/AQM purposes.
+ *
+ * @txqi: txq_info structure it is associated at given time
+ * @flowchain: can be linked to other flows for RR purposes
+ * @backlogchain: can be linked to other flows for backlog sorting purposes
+ * @queue: sk_buff queue
+ * @cvars: codel state vars
+ * @backlog: number of bytes pending in the queue
+ * @deficit: used for fair queueing balancing
+ */
+struct txq_flow {
+	struct txq_info *txqi;
+	struct list_head flowchain;
+	struct list_head backlogchain;
+	struct sk_buff_head queue;
+	struct codel_vars cvars;
+	int backlog;
+	int deficit;
+};
 
 /**
  * struct sta_info - STA information

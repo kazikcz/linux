@@ -31,6 +31,30 @@ int mac80211_format_buffer(char __user *userbuf, size_t count,
 	return simple_read_from_buffer(userbuf, count, ppos, buf, res);
 }
 
+static int mac80211_parse_buffer(const char __user *userbuf,
+				 size_t count,
+				 loff_t *ppos,
+				 char *fmt, ...)
+{
+	va_list args;
+	char buf[DEBUGFS_FORMAT_BUFFER_SIZE] = {};
+	int res;
+
+	if (count > sizeof(buf))
+		return -EINVAL;
+
+	if (copy_from_user(buf, userbuf, count))
+		return -EFAULT;
+
+	buf[sizeof(buf) - 1] = '\0';
+
+	va_start(args, fmt);
+	res = vsscanf(buf, fmt, args);
+	va_end(args);
+
+	return count;
+}
+
 #define DEBUGFS_READONLY_FILE_FN(name, fmt, value...)			\
 static ssize_t name## _read(struct file *file, char __user *userbuf,	\
 			    size_t count, loff_t *ppos)			\
@@ -69,6 +93,62 @@ DEBUGFS_READONLY_FILE(wep_iv, "%#08x",
 		      local->wep_iv & 0xffffff);
 DEBUGFS_READONLY_FILE(rate_ctrl_alg, "%s",
 	local->rate_ctrl ? local->rate_ctrl->ops->name : "hw/driver");
+
+DEBUGFS_READONLY_FILE(fq_drop_overlimit, "%d",
+		      local->fq.drop_overlimit);
+DEBUGFS_READONLY_FILE(fq_drop_codel, "%d",
+		      local->fq.drop_codel);
+DEBUGFS_READONLY_FILE(fq_backlog, "%d",
+		      local->fq.backlog);
+DEBUGFS_READONLY_FILE(fq_in_flight_usec, "%d",
+		      atomic_read(&local->fq.in_flight_usec));
+DEBUGFS_READONLY_FILE(fq_txq_limit, "%d",
+		      local->hw.txq_limit);
+DEBUGFS_READONLY_FILE(fq_txq_interval, "%llu",
+		      local->hw.txq_cparams.interval);
+DEBUGFS_READONLY_FILE(fq_txq_target, "%llu",
+		      local->hw.txq_cparams.target);
+DEBUGFS_READONLY_FILE(fq_ave_period, "%d",
+		      (int)ewma_fq_period_read(&local->fq.ave_period));
+
+#define DEBUGFS_RW_FILE_FN(name, expr)				\
+static ssize_t name## _write(struct file *file,			\
+			     const char __user *userbuf,	\
+			     size_t count,			\
+			     loff_t *ppos)			\
+{								\
+	struct ieee80211_local *local = file->private_data;	\
+	return expr;						\
+}
+
+#define DEBUGFS_RW_FILE(name, expr, fmt, value...)	\
+	DEBUGFS_READONLY_FILE_FN(name, fmt, value)	\
+	DEBUGFS_RW_FILE_FN(name, expr)			\
+	DEBUGFS_RW_FILE_OPS(name)
+
+#define DEBUGFS_RW_FILE_OPS(name)			\
+static const struct file_operations name## _ops = {	\
+	.read = name## _read,				\
+	.write = name## _write,				\
+	.open = simple_open,				\
+	.llseek = generic_file_llseek,			\
+};
+
+#define DEBUGFS_RW_EXPR_FQ(name)					\
+({									\
+	int res;							\
+	res = mac80211_parse_buffer(userbuf, count, ppos, "%d", &name);	\
+	ieee80211_recalc_fq_period(&local->hw);				\
+	res;								\
+})
+
+DEBUGFS_RW_FILE(fq_min_txops_target,   DEBUGFS_RW_EXPR_FQ(local->fq.min_txops_target),   "%d",  local->fq.min_txops_target);
+DEBUGFS_RW_FILE(fq_max_txops_per_txq,  DEBUGFS_RW_EXPR_FQ(local->fq.max_txops_per_txq),  "%d",  local->fq.max_txops_per_txq);
+DEBUGFS_RW_FILE(fq_min_txops_per_hw,   DEBUGFS_RW_EXPR_FQ(local->fq.min_txops_per_hw),   "%d",  local->fq.min_txops_per_hw);
+DEBUGFS_RW_FILE(fq_max_txops_per_hw,   DEBUGFS_RW_EXPR_FQ(local->fq.max_txops_per_hw),   "%d",  local->fq.max_txops_per_hw);
+DEBUGFS_RW_FILE(fq_txop_mixed_usec,    DEBUGFS_RW_EXPR_FQ(local->fq.txop_mixed_usec),    "%d",  local->fq.txop_mixed_usec);
+DEBUGFS_RW_FILE(fq_txop_green_usec,    DEBUGFS_RW_EXPR_FQ(local->fq.txop_green_usec),    "%d",  local->fq.txop_green_usec);
+
 
 #ifdef CONFIG_PM
 static ssize_t reset_write(struct file *file, const char __user *user_buf,
@@ -177,8 +257,178 @@ static ssize_t queues_read(struct file *file, char __user *user_buf,
 	return simple_read_from_buffer(user_buf, count, ppos, buf, res);
 }
 
+static ssize_t fq_read(struct file *file, char __user *user_buf,
+		       size_t count, loff_t *ppos)
+{
+	struct ieee80211_local *local = file->private_data;
+	struct ieee80211_sub_if_data *sdata;
+	struct sta_info *sta;
+	struct txq_flow *flow;
+	struct txq_info *txqi;
+	void *buf;
+	int new_flows;
+	int old_flows;
+	int len;
+	int i;
+	int rv;
+	int res = 0;
+	static const u8 zeroaddr[ETH_ALEN];
+
+	len = 32 * 1024;
+	buf = kzalloc(len, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+
+	spin_lock_bh(&local->fq.lock);
+	rcu_read_lock();
+
+	list_for_each_entry(txqi, &local->fq.new_flows, flowchain) {
+		res += scnprintf(buf + res, len - res,
+				 "sched new txqi vif %s sta %pM tid %d deficit %d\n",
+				 container_of(txqi->txq.vif, struct ieee80211_sub_if_data, vif)->name,
+				 txqi->txq.sta ? txqi->txq.sta->addr : zeroaddr,
+				 txqi->txq.tid,
+				 txqi->deficit);
+	}
+
+	list_for_each_entry(txqi, &local->fq.old_flows, flowchain) {
+		res += scnprintf(buf + res, len - res,
+				 "sched old txqi vif %s sta %pM tid %d deficit %d\n",
+				 container_of(txqi->txq.vif, struct ieee80211_sub_if_data, vif)->name,
+				 txqi->txq.sta ? txqi->txq.sta->addr : zeroaddr,
+				 txqi->txq.tid,
+				 txqi->deficit);
+	}
+
+	list_for_each_entry_rcu(sta, &local->sta_list, list) {
+		for (i = 0; i < IEEE80211_NUM_TIDS; i++) {
+			if (!sta->sta.txq[i])
+				continue;
+
+			txqi = container_of(sta->sta.txq[i], struct txq_info, txq);
+			if (!txqi->backlog_bytes)
+				continue;
+
+			new_flows = 0;
+			old_flows = 0;
+
+			list_for_each_entry(flow, &txqi->new_flows, flowchain)
+				new_flows++;
+			list_for_each_entry(flow, &txqi->old_flows, flowchain)
+				old_flows++;
+
+			res += scnprintf(buf + res, len - res,
+					 "sta %pM tid %d backlog (%db %dp) flows (%d new %d old) burst %d bpu %d in-flight %d\n",
+					 sta->sta.addr,
+					 i,
+					 txqi->backlog_bytes,
+					 txqi->backlog_packets,
+					 new_flows,
+					 old_flows,
+					 txqi->bytes_per_burst,
+					 txqi->bytes_per_usec,
+					 atomic_read(&txqi->in_flight_usec)
+					);
+
+			flow = &txqi->flow;
+			res += scnprintf(buf + res, len - res,
+					 "sta %pM def flow %p backlog (%db %dp)\n",
+					 sta->sta.addr,
+					 flow,
+					 flow->backlog,
+					 flow->queue.qlen
+				);
+
+			list_for_each_entry(flow, &txqi->new_flows, flowchain)
+				res += scnprintf(buf + res, len - res,
+						 "sta %pM tid %d new flow %p backlog (%db %dp)\n",
+						 sta->sta.addr,
+						 i,
+						 flow,
+						 flow->backlog,
+						 flow->queue.qlen
+					);
+
+			list_for_each_entry(flow, &txqi->old_flows, flowchain)
+				res += scnprintf(buf + res, len - res,
+						 "sta %pM tid %d old flow %p backlog (%db %dp)\n",
+						 sta->sta.addr,
+						 i,
+						 flow,
+						 flow->backlog,
+						 flow->queue.qlen
+					);
+		}
+	}
+
+	list_for_each_entry_rcu(sdata, &local->interfaces, list) {
+		if (!sdata->vif.txq)
+			continue;
+
+		txqi = container_of(sdata->vif.txq, struct txq_info, txq);
+		if (!txqi->backlog_bytes)
+			continue;
+
+		new_flows = 0;
+		old_flows = 0;
+
+		list_for_each_entry(flow, &txqi->new_flows, flowchain)
+			new_flows++;
+		list_for_each_entry(flow, &txqi->old_flows, flowchain)
+			old_flows++;
+
+		res += scnprintf(buf + res, len - res,
+				 "vif %s backlog (%db %dp) flows (%d new %d old) burst %d bpu %d in-flight %d\n",
+				 sdata->name,
+				 txqi->backlog_bytes,
+				 txqi->backlog_packets,
+				 new_flows,
+				 old_flows,
+				 txqi->bytes_per_burst,
+				 txqi->bytes_per_usec,
+				 atomic_read(&txqi->in_flight_usec)
+				);
+
+		flow = &txqi->flow;
+		res += scnprintf(buf + res, len - res,
+				 "vif %s def flow %p backlog (%db %dp)\n",
+				 sdata->name,
+				 flow,
+				 flow->backlog,
+				 flow->queue.qlen
+			);
+
+		list_for_each_entry(flow, &txqi->new_flows, flowchain)
+			res += scnprintf(buf + res, len - res,
+					 "vif %s new flow %p backlog (%db %dp)\n",
+					 sdata->name,
+					 flow,
+					 flow->backlog,
+					 flow->queue.qlen
+				);
+
+		list_for_each_entry(flow, &txqi->old_flows, flowchain)
+			res += scnprintf(buf + res, len - res,
+					 "vif %s old flow %p backlog (%db %dp)\n",
+					 sdata->name,
+					 flow,
+					 flow->backlog,
+					 flow->queue.qlen
+				);
+	}
+
+	rcu_read_unlock();
+	spin_unlock_bh(&local->fq.lock);
+
+	rv = simple_read_from_buffer(user_buf, count, ppos, buf, res);
+	kfree(buf);
+
+	return rv;
+}
+
 DEBUGFS_READONLY_FILE_OPS(hwflags);
 DEBUGFS_READONLY_FILE_OPS(queues);
+DEBUGFS_READONLY_FILE_OPS(fq);
 
 /* statistics stuff */
 
@@ -247,12 +497,29 @@ void debugfs_hw_add(struct ieee80211_local *local)
 	DEBUGFS_ADD(total_ps_buffered);
 	DEBUGFS_ADD(wep_iv);
 	DEBUGFS_ADD(queues);
+	DEBUGFS_ADD(fq);
 #ifdef CONFIG_PM
 	DEBUGFS_ADD_MODE(reset, 0200);
 #endif
 	DEBUGFS_ADD(hwflags);
 	DEBUGFS_ADD(user_power);
 	DEBUGFS_ADD(power);
+
+	DEBUGFS_ADD(fq_drop_overlimit);
+	DEBUGFS_ADD(fq_drop_codel);
+	DEBUGFS_ADD(fq_backlog);
+	DEBUGFS_ADD(fq_in_flight_usec);
+	DEBUGFS_ADD(fq_txq_limit);
+	DEBUGFS_ADD(fq_txq_interval);
+	DEBUGFS_ADD(fq_txq_target);
+	DEBUGFS_ADD(fq_ave_period);
+
+	DEBUGFS_ADD(fq_min_txops_target);
+	DEBUGFS_ADD(fq_max_txops_per_txq);
+	DEBUGFS_ADD(fq_min_txops_per_hw);
+	DEBUGFS_ADD(fq_max_txops_per_hw);
+	DEBUGFS_ADD(fq_txop_mixed_usec);
+	DEBUGFS_ADD(fq_txop_green_usec);
 
 	statsd = debugfs_create_dir("statistics", phyd);
 

@@ -244,6 +244,9 @@ void ieee80211_propagate_queue_wake(struct ieee80211_local *local, int queue)
 	struct ieee80211_sub_if_data *sdata;
 	int n_acs = IEEE80211_NUM_ACS;
 
+	if (local->ops->wake_tx_queue)
+		return;
+
 	if (local->hw.queues < IEEE80211_NUM_ACS)
 		n_acs = 1;
 
@@ -259,11 +262,6 @@ void ieee80211_propagate_queue_wake(struct ieee80211_local *local, int queue)
 
 		for (ac = 0; ac < n_acs; ac++) {
 			int ac_queue = sdata->vif.hw_queue[ac];
-
-			if (local->ops->wake_tx_queue &&
-			    (atomic_read(&sdata->txqs_len[ac]) >
-			     local->hw.txq_ac_max_pending))
-				continue;
 
 			if (ac_queue == queue ||
 			    (sdata->vif.cab_queue == queue &&
@@ -350,6 +348,9 @@ static void __ieee80211_stop_queue(struct ieee80211_hw *hw, int queue,
 		local->q_stop_reasons[queue][reason]++;
 
 	if (__test_and_set_bit(reason, &local->queue_stop_reasons[queue]))
+		return;
+
+	if (local->ops->wake_tx_queue)
 		return;
 
 	if (local->hw.queues < IEEE80211_NUM_ACS)
@@ -3392,8 +3393,12 @@ void ieee80211_init_tx_queue(struct ieee80211_sub_if_data *sdata,
 			     struct sta_info *sta,
 			     struct txq_info *txqi, int tid)
 {
-	skb_queue_head_init(&txqi->queue);
+	INIT_LIST_HEAD(&txqi->flowchain);
+	INIT_LIST_HEAD(&txqi->old_flows);
+	INIT_LIST_HEAD(&txqi->new_flows);
+	ieee80211_init_flow(&txqi->flow);
 	txqi->txq.vif = &sdata->vif;
+	txqi->flow.txqi = txqi;
 
 	if (sta) {
 		txqi->txq.sta = &sta->sta;
@@ -3414,9 +3419,9 @@ void ieee80211_txq_get_depth(struct ieee80211_txq *txq,
 	struct txq_info *txqi = to_txq_info(txq);
 
 	if (frame_cnt)
-		*frame_cnt = txqi->queue.qlen;
+		*frame_cnt = txqi->backlog_packets;
 
 	if (byte_cnt)
-		*byte_cnt = txqi->byte_cnt;
+		*byte_cnt = txqi->backlog_bytes;
 }
 EXPORT_SYMBOL(ieee80211_txq_get_depth);

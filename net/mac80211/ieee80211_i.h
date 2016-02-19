@@ -805,9 +805,18 @@ enum txq_info_flags {
 };
 
 struct txq_info {
-	struct sk_buff_head queue;
+	struct txq_flow flow;
+	struct list_head flowchain;
+	struct list_head new_flows;
+	struct list_head old_flows;
+	int backlog_bytes;
+	int backlog_packets;
+	int bytes_per_burst;
+	int bytes_per_usec;
+	int deficit;
+	int in_flight_delta_usec;
+	atomic_t in_flight_usec;
 	unsigned long flags;
-	unsigned long byte_cnt;
 
 	/* keep last! */
 	struct ieee80211_txq txq;
@@ -855,7 +864,6 @@ struct ieee80211_sub_if_data {
 	bool control_port_no_encrypt;
 	int encrypt_headroom;
 
-	atomic_t txqs_len[IEEE80211_NUM_ACS];
 	struct ieee80211_tx_queue_params tx_conf[IEEE80211_NUM_ACS];
 	struct mac80211_qos_map __rcu *qos_map;
 
@@ -1092,11 +1100,37 @@ enum mac80211_scan_state {
 	SCAN_ABORT,
 };
 
+DECLARE_EWMA(fq_period, 16, 4)
+
+struct ieee80211_fq {
+	struct txq_flow *flows;
+	struct list_head backlogs;
+	struct list_head old_flows;
+	struct list_head new_flows;
+	struct ewma_fq_period ave_period;
+	spinlock_t lock;
+	atomic_t in_flight_usec;
+	int flows_cnt;
+	int perturbation;
+	int quantum;
+	int backlog;
+	int min_txops_target;
+	int max_txops_per_txq;
+	int min_txops_per_hw;
+	int max_txops_per_hw;
+	int txop_mixed_usec;
+	int txop_green_usec;
+
+	int drop_overlimit;
+	int drop_codel;
+};
+
 struct ieee80211_local {
 	/* embed the driver visible part.
 	 * don't cast (use the static inlines below), but we keep
 	 * it first anyway so they become a no-op */
 	struct ieee80211_hw hw;
+	struct ieee80211_fq fq;
 
 	const struct ieee80211_ops *ops;
 
@@ -1928,6 +1962,11 @@ static inline bool ieee80211_can_run_worker(struct ieee80211_local *local)
 void ieee80211_init_tx_queue(struct ieee80211_sub_if_data *sdata,
 			     struct sta_info *sta,
 			     struct txq_info *txq, int tid);
+void ieee80211_purge_txq(struct ieee80211_local *local, struct txq_info *txqi);
+void ieee80211_init_flow(struct txq_flow *flow);
+int ieee80211_setup_flows(struct ieee80211_local *local);
+void ieee80211_teardown_flows(struct ieee80211_local *local);
+
 void ieee80211_send_auth(struct ieee80211_sub_if_data *sdata,
 			 u16 transaction, u16 auth_alg, u16 status,
 			 const u8 *extra, size_t extra_len, const u8 *bssid,
