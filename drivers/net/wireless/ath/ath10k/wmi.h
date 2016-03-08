@@ -3296,7 +3296,7 @@ struct wmi_csa_event {
 /* the definition of different PDEV parameters */
 #define PDEV_DEFAULT_STATS_UPDATE_PERIOD    500
 #define VDEV_DEFAULT_STATS_UPDATE_PERIOD    500
-#define PEER_DEFAULT_STATS_UPDATE_PERIOD    500
+#define PEER_DEFAULT_STATS_UPDATE_PERIOD    100
 
 struct wmi_pdev_param_map {
 	u32 tx_chain_mask;

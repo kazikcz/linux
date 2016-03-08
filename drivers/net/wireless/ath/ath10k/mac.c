@@ -4427,16 +4427,14 @@ static int ath10k_start(struct ieee80211_hw *hw)
 
 	ar->ani_enabled = true;
 
-	if (test_bit(WMI_SERVICE_PEER_STATS, ar->wmi.svc_map)) {
-		param = ar->wmi.pdev_param->peer_stats_update_period;
-		ret = ath10k_wmi_pdev_set_param(ar, param,
-						PEER_DEFAULT_STATS_UPDATE_PERIOD);
-		if (ret) {
-			ath10k_warn(ar,
-				    "failed to set peer stats period : %d\n",
-				    ret);
-			goto err_core_stop;
-		}
+	param = ar->wmi.pdev_param->peer_stats_update_period;
+	ret = ath10k_wmi_pdev_set_param(ar, param,
+					PEER_DEFAULT_STATS_UPDATE_PERIOD);
+	if (ret) {
+		ath10k_warn(ar,
+			    "failed to set peer stats period : %d\n",
+			    ret);
+		goto err_core_stop;
 	}
 
 	ar->num_started_vdevs = 0;
@@ -7215,6 +7213,13 @@ ath10k_mac_op_switch_vif_chanctx(struct ieee80211_hw *hw,
 	return 0;
 }
 
+static u32
+ath10k_mac_op_get_expected_throughput(struct ieee80211_sta *sta)
+{
+	struct ath10k_sta *arsta = (struct ath10k_sta *)sta->drv_priv;
+	return arsta->tx_rate_kbps;
+}
+
 static const struct ieee80211_ops ath10k_ops = {
 	.tx				= ath10k_mac_op_tx,
 	.wake_tx_queue			= ath10k_mac_op_wake_tx_queue,
@@ -7254,6 +7259,7 @@ static const struct ieee80211_ops ath10k_ops = {
 	.assign_vif_chanctx		= ath10k_mac_op_assign_vif_chanctx,
 	.unassign_vif_chanctx		= ath10k_mac_op_unassign_vif_chanctx,
 	.switch_vif_chanctx		= ath10k_mac_op_switch_vif_chanctx,
+	.get_expected_throughput	= ath10k_mac_op_get_expected_throughput,
 
 	CFG80211_TESTMODE_CMD(ath10k_tm_cmd)
 

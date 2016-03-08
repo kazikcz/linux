@@ -316,6 +316,58 @@ static void ath10k_debug_fw_stats_reset(struct ath10k *ar)
 	spin_unlock_bh(&ar->data_lock);
 }
 
+static void ath10k_mac_update_txrx_rate_iter(void *data,
+					     u8 *mac,
+					     struct ieee80211_vif *vif)
+{
+	struct ath10k_fw_stats_peer *peer = data;
+	struct ath10k_vif *arvif;
+
+	if (memcmp(vif->addr, peer->peer_macaddr, ETH_ALEN))
+		return;
+
+	arvif = (void *)vif->drv_priv;
+	arvif->tx_rate_kbps = peer->peer_tx_rate;
+	arvif->rx_rate_kbps = peer->peer_rx_rate;
+}
+
+static void ath10k_mac_update_txrx_rate(struct ath10k *ar,
+					struct ath10k_fw_stats *stats)
+{
+	struct ieee80211_hw *hw = ar->hw;
+	struct ath10k_fw_stats_peer *peer;
+	struct ath10k_sta *arsta;
+	struct ieee80211_sta *sta;
+	const u8 *localaddr = NULL;
+
+	rcu_read_lock();
+
+	list_for_each_entry(peer, &stats->peers, list) {
+		/* This doesn't account for multiple STA connected on different
+		 * vifs. Unfortunately there's no way to derive that from the available
+		 * information.
+		 */
+		sta = ieee80211_find_sta_by_ifaddr(hw,
+						   peer->peer_macaddr,
+						   localaddr);
+		if (!sta) {
+			/* This tries to update multicast rates */
+			ieee80211_iterate_active_interfaces_atomic(
+					hw,
+					IEEE80211_IFACE_ITER_NORMAL,
+					ath10k_mac_update_txrx_rate_iter,
+					peer);
+			continue;
+		}
+
+		arsta = (void *)sta->drv_priv;
+		arsta->tx_rate_kbps = peer->peer_tx_rate;
+		arsta->rx_rate_kbps = peer->peer_rx_rate;
+	}
+
+	rcu_read_unlock();
+}
+
 void ath10k_debug_fw_stats_process(struct ath10k *ar, struct sk_buff *skb)
 {
 	struct ath10k_fw_stats stats = {};
@@ -335,6 +387,8 @@ void ath10k_debug_fw_stats_process(struct ath10k *ar, struct sk_buff *skb)
 		goto free;
 	}
 
+	ath10k_mac_update_txrx_rate(ar, &stats);
+
 	/* Stat data may exceed htc-wmi buffer limit. In such case firmware
 	 * splits the stats data and delivers it in a ping-pong fashion of
 	 * request cmd-update event.
@@ -350,13 +404,6 @@ void ath10k_debug_fw_stats_process(struct ath10k *ar, struct sk_buff *skb)
 	peer_stats_svc = test_bit(WMI_SERVICE_PEER_STATS, ar->wmi.svc_map);
 	if (peer_stats_svc)
 		ath10k_sta_update_rx_duration(ar, &stats.peers);
-
-	if (ar->debug.fw_stats_done) {
-		if (!peer_stats_svc)
-			ath10k_warn(ar, "received unsolicited stats update event\n");
-
-		goto free;
-	}
 
 	num_peers = ath10k_wmi_fw_stats_num_peers(&ar->debug.fw_stats.peers);
 	num_vdevs = ath10k_wmi_fw_stats_num_vdevs(&ar->debug.fw_stats.vdevs);

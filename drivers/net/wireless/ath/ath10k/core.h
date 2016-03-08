@@ -331,6 +331,9 @@ struct ath10k_sta {
 	/* protected by conf_mutex */
 	bool aggr_mode;
 	u64 rx_duration;
+
+	u32 tx_rate_kbps;
+	u32 rx_rate_kbps;
 #endif
 };
 
@@ -372,6 +375,8 @@ struct ath10k_vif {
 	s8 def_wep_key_idx;
 
 	u16 tx_seq_no;
+	u32 tx_rate_kbps;
+	u32 rx_rate_kbps;
 
 	union {
 		struct {
