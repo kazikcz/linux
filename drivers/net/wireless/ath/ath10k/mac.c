@@ -3624,28 +3624,20 @@ void ath10k_mgmt_over_wmi_tx_work(struct work_struct *work)
 
 static void ath10k_mac_txq_init(struct ieee80211_txq *txq)
 {
-	struct ath10k_txq *artxq = (void *)txq->drv_priv;
-
 	if (!txq)
 		return;
 
-	INIT_LIST_HEAD(&artxq->list);
+	/* It's useful to keep this even though it doesn't do anything now */
 }
 
 static void ath10k_mac_txq_unref(struct ath10k *ar, struct ieee80211_txq *txq)
 {
-	struct ath10k_txq *artxq = (void *)txq->drv_priv;
 	struct ath10k_skb_cb *cb;
 	struct sk_buff *msdu;
 	int msdu_id;
 
 	if (!txq)
 		return;
-
-	spin_lock_bh(&ar->txqs_lock);
-	if (!list_empty(&artxq->list))
-		list_del_init(&artxq->list);
-	spin_unlock_bh(&ar->txqs_lock);
 
 	spin_lock_bh(&ar->htt.tx_lock);
 	idr_for_each_entry(&ar->htt.pending_tx, msdu, msdu_id) {
@@ -3725,7 +3717,7 @@ int ath10k_mac_tx_push_txq(struct ieee80211_hw *hw,
 		ath10k_htt_tx_dec_pending(htt, is_mgmt);
 		spin_unlock_bh(&ar->htt.tx_lock);
 
-		return -ENOENT;
+		return 0;
 	}
 
 	ath10k_mac_tx_h_fill_cb(ar, vif, txq, skb);
@@ -3752,44 +3744,59 @@ int ath10k_mac_tx_push_txq(struct ieee80211_hw *hw,
 	return skb_len;
 }
 
+#define MIN_TX_SLOTS 42
+
+static int ath10k_mac_tx_wake(struct ieee80211_hw *hw,
+			      struct ieee80211_txq *txq,
+			      int budget)
+{
+	struct ath10k *ar = hw->priv;
+	int sent = 0;
+	int ret;
+	int slots;
+
+	if (!ath10k_mac_tx_can_push(hw, txq))
+		return 0;
+
+	/* This gives more opportunity to form longer bursts when there's a lot
+	 * of stations active
+	 */
+	slots = ar->htt.max_num_pending_tx - ar->htt.num_pending_tx;
+	if (slots < MIN_TX_SLOTS)
+		return -1;
+
+	while (budget > 0) {
+		ret = ath10k_mac_tx_push_txq(hw, txq);
+		if (ret <= 0)
+			break;
+
+		sent++;
+		budget -= ret;
+	}
+
+	if (ret >= 0)
+		return sent;
+	else
+		return -1;
+}
+
 void ath10k_mac_tx_push_pending(struct ath10k *ar)
 {
 	struct ieee80211_hw *hw = ar->hw;
-	struct ieee80211_txq *txq;
-	struct ath10k_txq *artxq;
-	struct ath10k_txq *last;
 	int ret;
-	int max;
 
-	spin_lock_bh(&ar->txqs_lock);
-	rcu_read_lock();
+	ieee80211_recalc_fq_period(hw);
 
-	last = list_last_entry(&ar->txqs, struct ath10k_txq, list);
-	while (!list_empty(&ar->txqs)) {
-		artxq = list_first_entry(&ar->txqs, struct ath10k_txq, list);
-		txq = container_of((void *)artxq, struct ieee80211_txq,
-				   drv_priv);
-
-		/* Prevent aggressive sta/tid taking over tx queue */
-		max = 16;
-		while (max--) {
-			ret = ath10k_mac_tx_push_txq(hw, txq);
-			if (ret < 0)
-				break;
-		}
-
-		list_del_init(&artxq->list);
-		ath10k_htt_tx_txq_update(hw, txq);
-
-		if (artxq == last || (ret < 0 && ret != -ENOENT)) {
-			if (ret != -ENOENT)
-				list_add_tail(&artxq->list, &ar->txqs);
-			break;
-		}
+	ret = ieee80211_tx_schedule(hw, ath10k_mac_tx_wake);
+	switch (ret) {
+	default:
+		ath10k_warn(ar, "unexpected tx schedul retval: %d\n",
+			    ret);
+		/* pass through */
+	case -EBUSY:
+	case -ENOENT:
+		break;
 	}
-
-	rcu_read_unlock();
-	spin_unlock_bh(&ar->txqs_lock);
 }
 
 /************/
@@ -4013,16 +4020,9 @@ static void ath10k_mac_op_wake_tx_queue(struct ieee80211_hw *hw,
 					struct ieee80211_txq *txq)
 {
 	struct ath10k *ar = hw->priv;
-	struct ath10k_txq *artxq = (void *)txq->drv_priv;
 
-	if (ath10k_mac_tx_can_push(hw, txq)) {
-		spin_lock_bh(&ar->txqs_lock);
-		if (list_empty(&artxq->list))
-			list_add_tail(&artxq->list, &ar->txqs);
-		spin_unlock_bh(&ar->txqs_lock);
-
+	if (ath10k_mac_tx_can_push(hw, txq))
 		tasklet_schedule(&ar->htt.txrx_compl_task);
-	}
 
 	ath10k_htt_tx_txq_update(hw, txq);
 }
