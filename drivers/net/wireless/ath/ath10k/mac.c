@@ -3777,23 +3777,35 @@ void ath10k_mac_tx_push_pending(struct ath10k *ar)
 	struct ieee80211_hw *hw = ar->hw;
 	struct ieee80211_txq *txq;
 	struct ath10k_txq *artxq;
-	struct ath10k_txq *last;
 	int ret;
 	int max;
 
 	spin_lock_bh(&ar->txqs_lock);
 	rcu_read_lock();
 
-	last = list_last_entry(&ar->txqs, struct ath10k_txq, list);
-	while (!list_empty(&ar->txqs)) {
+	for (;;) {
+		if (list_empty(&ar->txqs))
+			break;
+
+		if (dql_avail(&ar->dql) < 0)
+			break;
+
 		artxq = list_first_entry(&ar->txqs, struct ath10k_txq, list);
 		txq = container_of((void *)artxq, struct ieee80211_txq,
 				   drv_priv);
 
-		/* Prevent aggressive sta/tid taking over tx queue */
 		max = 16;
 		ret = 0;
-		while (ath10k_mac_tx_can_push(hw, txq) && max--) {
+		for (;;) {
+			if (!max--)
+				break;
+
+			if (!ath10k_mac_tx_can_push(hw, txq))
+				break;
+
+			if (dql_avail(&ar->dql) < 0)
+				break;
+
 			ret = ath10k_mac_tx_push_txq(hw, txq);
 			if (ret < 0)
 				break;
@@ -3805,7 +3817,7 @@ void ath10k_mac_tx_push_pending(struct ath10k *ar)
 
 		ath10k_htt_tx_txq_update(hw, txq);
 
-		if (artxq == last || (ret < 0 && ret != -ENOENT))
+		if (ret < 0 && ret != -ENOENT)
 			break;
 	}
 
@@ -4352,6 +4364,8 @@ static int ath10k_start(struct ieee80211_hw *hw)
 	ath10k_drain_tx(ar);
 
 	mutex_lock(&ar->conf_mutex);
+
+	dql_init(&ar->dql, HZ);
 
 	switch (ar->state) {
 	case ATH10K_STATE_OFF:

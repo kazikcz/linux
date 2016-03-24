@@ -1596,6 +1596,7 @@ static void ath10k_htt_rx_tx_compl_ind(struct ath10k *ar,
 	struct htt_resp *resp = (struct htt_resp *)skb->data;
 	struct htt_tx_done tx_done = {};
 	int status = MS(resp->data_tx_completion.flags, HTT_DATA_TX_STATUS);
+	unsigned int tx_completed = 0;
 	__le16 msdu_id;
 	int i;
 
@@ -1635,9 +1636,12 @@ static void ath10k_htt_rx_tx_compl_ind(struct ath10k *ar,
 		if (!kfifo_put(&htt->txdone_fifo, tx_done)) {
 			ath10k_warn(ar, "txdone fifo overrun, msdu_id %d status %d\n",
 				    tx_done.msdu_id, tx_done.status);
-			ath10k_txrx_tx_unref(htt, &tx_done);
+			ath10k_txrx_tx_unref(htt, &tx_done, &tx_completed);
 		}
 	}
+
+	if (unlikely(tx_completed))
+		dql_completed(&htt->ar->dql, tx_completed);
 }
 
 static void ath10k_htt_rx_addba(struct ath10k *ar, struct htt_resp *resp)
@@ -2285,7 +2289,7 @@ bool ath10k_htt_t2h_msg_handler(struct ath10k *ar, struct sk_buff *skb)
 			break;
 		}
 
-		status = ath10k_txrx_tx_unref(htt, &tx_done);
+		status = ath10k_txrx_tx_unref(htt, &tx_done, NULL);
 		if (!status) {
 			spin_lock_bh(&htt->tx_lock);
 			ath10k_htt_tx_mgmt_dec_pending(htt);
@@ -2417,6 +2421,7 @@ static void ath10k_htt_txrx_compl_task(unsigned long ptr)
 	struct sk_buff *skb;
 	unsigned long flags;
 	int num_mpdus;
+	unsigned int tx_completed = 0;
 
 	__skb_queue_head_init(&rx_ind_q);
 	__skb_queue_head_init(&tx_ind_q);
@@ -2435,7 +2440,9 @@ static void ath10k_htt_txrx_compl_task(unsigned long ptr)
 	 *  you don't need extra locking to use these macro.
 	 */
 	while (kfifo_get(&htt->txdone_fifo, &tx_done))
-		ath10k_txrx_tx_unref(htt, &tx_done);
+		ath10k_txrx_tx_unref(htt, &tx_done, &tx_completed);
+
+	dql_completed(&htt->ar->dql, tx_completed);
 
 	while ((skb = __skb_dequeue(&tx_ind_q))) {
 		ath10k_htt_rx_tx_fetch_ind(ar, skb);
