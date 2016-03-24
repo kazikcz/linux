@@ -50,7 +50,8 @@ out:
 }
 
 int ath10k_txrx_tx_unref(struct ath10k_htt *htt,
-			 const struct htt_tx_done *tx_done)
+			 const struct htt_tx_done *tx_done,
+			 unsigned int *completed)
 {
 	struct ath10k *ar = htt->ar;
 	struct device *dev = ar->dev;
@@ -86,6 +87,9 @@ int ath10k_txrx_tx_unref(struct ath10k_htt *htt,
 
 	if (txq)
 		artxq->num_fw_queued--;
+
+	if (completed)
+		*completed += msdu->len;
 
 	ath10k_htt_tx_free_msdu_id(htt, tx_done->msdu_id);
 	ath10k_htt_tx_dec_pending(htt);
