@@ -1679,7 +1679,8 @@ static void ath10k_htt_rx_frag_handler(struct ath10k_htt *htt,
 }
 
 static void ath10k_htt_rx_frm_tx_compl(struct ath10k *ar,
-				       struct sk_buff *skb)
+				       struct sk_buff *skb,
+				       unsigned int *completed)
 {
 	struct ath10k_htt *htt = &ar->htt;
 	struct htt_resp *resp = (struct htt_resp *)skb->data;
@@ -1712,7 +1713,7 @@ static void ath10k_htt_rx_frm_tx_compl(struct ath10k *ar,
 	for (i = 0; i < resp->data_tx_completion.num_msdus; i++) {
 		msdu_id = resp->data_tx_completion.msdus[i];
 		tx_done.msdu_id = __le16_to_cpu(msdu_id);
-		ath10k_txrx_tx_unref(htt, &tx_done);
+		ath10k_txrx_tx_unref(htt, &tx_done, completed);
 	}
 }
 
@@ -2354,7 +2355,7 @@ void ath10k_htt_t2h_msg_handler(struct ath10k *ar, struct sk_buff *skb)
 			break;
 		}
 
-		status = ath10k_txrx_tx_unref(htt, &tx_done);
+		status = ath10k_txrx_tx_unref(htt, &tx_done, NULL);
 		if (!status) {
 			spin_lock_bh(&htt->tx_lock);
 			ath10k_htt_tx_mgmt_dec_pending(htt);
@@ -2482,6 +2483,7 @@ static void ath10k_htt_txrx_compl_task(unsigned long ptr)
 	struct htt_resp *resp;
 	struct sk_buff *skb;
 	unsigned long flags;
+	unsigned int completed = 0;
 
 	__skb_queue_head_init(&tx_q);
 	__skb_queue_head_init(&rx_q);
@@ -2505,9 +2507,11 @@ static void ath10k_htt_txrx_compl_task(unsigned long ptr)
 	spin_unlock_irqrestore(&htt->tx_fetch_ind_q.lock, flags);
 
 	while ((skb = __skb_dequeue(&tx_q))) {
-		ath10k_htt_rx_frm_tx_compl(htt->ar, skb);
+		ath10k_htt_rx_frm_tx_compl(htt->ar, skb, &completed);
 		dev_kfree_skb_any(skb);
 	}
+
+	dql_completed(&htt->ar->dql, completed);
 
 	while ((skb = __skb_dequeue(&tx_ind_q))) {
 		ath10k_htt_rx_tx_fetch_ind(ar, skb);

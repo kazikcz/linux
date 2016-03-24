@@ -367,7 +367,7 @@ static int ath10k_htt_tx_clean_up_pending(int msdu_id, void *skb, void *ctx)
 	tx_done.discard = 1;
 	tx_done.msdu_id = msdu_id;
 
-	ath10k_txrx_tx_unref(htt, &tx_done);
+	ath10k_txrx_tx_unref(htt, &tx_done, NULL);
 
 	return 0;
 }
@@ -378,6 +378,7 @@ void ath10k_htt_tx_free(struct ath10k_htt *htt)
 
 	idr_for_each(&htt->pending_tx, ath10k_htt_tx_clean_up_pending, htt->ar);
 	idr_destroy(&htt->pending_tx);
+	dql_reset(&htt->ar->dql);
 
 	if (htt->txbuf.vaddr) {
 		size = htt->max_num_pending_tx *
@@ -839,6 +840,7 @@ int ath10k_htt_tx(struct ath10k_htt *htt, enum ath10k_hw_txrx_mode txmode,
 	u16 freq = 0;
 	u32 frags_paddr = 0;
 	u32 txbuf_paddr;
+	size_t skb_len;
 	struct htt_msdu_ext_desc *ext_desc = NULL;
 
 	spin_lock_bh(&htt->tx_lock);
@@ -1000,11 +1002,15 @@ int ath10k_htt_tx(struct ath10k_htt *htt, enum ath10k_hw_txrx_mode txmode,
 	sg_items[1].paddr = skb_cb->paddr;
 	sg_items[1].len = prefetch_len;
 
+	skb_len = msdu->len;
+
 	res = ath10k_hif_tx_sg(htt->ar,
 			       htt->ar->htc.endpoint[htt->eid].ul_pipe_id,
 			       sg_items, ARRAY_SIZE(sg_items));
 	if (res)
 		goto err_unmap_msdu;
+
+	dql_queued(&ar->dql, skb_len);
 
 	return 0;
 
