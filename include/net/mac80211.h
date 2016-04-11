@@ -2143,9 +2143,6 @@ enum ieee80211_hw_flags {
  * @n_cipher_schemes: a size of an array of cipher schemes definitions.
  * @cipher_schemes: a pointer to an array of cipher scheme definitions
  *	supported by HW.
- *
- * @txq_ac_max_pending: maximum number of frames per AC pending in all txq
- *	entries for a vif.
  */
 struct ieee80211_hw {
 	struct ieee80211_conf conf;
@@ -2176,7 +2173,6 @@ struct ieee80211_hw {
 	u8 uapsd_max_sp_len;
 	u8 n_cipher_schemes;
 	const struct ieee80211_cipher_scheme *cipher_schemes;
-	int txq_ac_max_pending;
 };
 
 static inline bool _ieee80211_hw_check(struct ieee80211_hw *hw,
