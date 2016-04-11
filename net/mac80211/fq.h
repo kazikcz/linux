@@ -102,6 +102,8 @@ begin:
 	}
 
 	flow->deficit -= skb->len;
+	tin->tx_bytes += skb->len;
+	tin->tx_packets++;
 
 	return skb;
 }
@@ -120,8 +122,14 @@ static struct fq_flow *fq_flow_classify(struct fq *fq,
 	idx = reciprocal_scale(hash, fq->flows_cnt);
 	flow = &fq->flows[idx];
 
-	if (flow->tin && flow->tin != tin)
+	if (flow->tin && flow->tin != tin) {
 		flow = fq_flow_get_default_fn(fq, tin, idx, skb);
+		tin->collisions++;
+		fq->collisions++;
+	}
+
+	if (!flow->tin)
+		tin->flows++;
 
 	return flow;
 }
@@ -174,6 +182,9 @@ static void fq_tin_enqueue(struct fq *fq,
 			return;
 
 		fq_skb_free_fn(fq, flow->tin, flow, skb);
+
+		flow->tin->overlimit++;
+		fq->overlimit++;
 	}
 }
 

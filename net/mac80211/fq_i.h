@@ -51,6 +51,11 @@ struct fq_tin {
 	struct list_head old_flows;
 	u32 backlog_bytes;
 	u32 backlog_packets;
+	u32 overlimit;
+	u32 collisions;
+	u32 flows;
+	u32 tx_bytes;
+	u32 tx_packets;
 };
 
 /**
@@ -70,6 +75,8 @@ struct fq {
 	u32 limit;
 	u32 quantum;
 	u32 backlog;
+	u32 overlimit;
+	u32 collisions;
 };
 
 #endif
