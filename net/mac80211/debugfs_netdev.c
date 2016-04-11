@@ -30,7 +30,7 @@ static ssize_t ieee80211_if_read(
 	size_t count, loff_t *ppos,
 	ssize_t (*format)(const struct ieee80211_sub_if_data *, char *, int))
 {
-	char buf[70];
+	char buf[200];
 	ssize_t ret = -EINVAL;
 
 	read_lock(&dev_base_lock);
@@ -235,6 +235,31 @@ ieee80211_if_fmt_hw_queues(const struct ieee80211_sub_if_data *sdata,
 	return len;
 }
 IEEE80211_IF_FILE_R(hw_queues);
+
+static ssize_t
+ieee80211_if_fmt_txq(const struct ieee80211_sub_if_data *sdata,
+		     char *buf, int buflen)
+{
+	struct txq_info *txqi;
+	int len = 0;
+
+	if (!sdata->vif.txq)
+		return 0;
+
+	txqi = to_txq_info(sdata->vif.txq);
+	len += scnprintf(buf + len, buflen - len,
+			 "CAB backlog %ub %up flows %u overlimit %u collisions %u tx %ub %up\n",
+			 txqi->tin.backlog_bytes,
+			 txqi->tin.backlog_packets,
+			 txqi->tin.flows,
+			 txqi->tin.overlimit,
+			 txqi->tin.collisions,
+			 txqi->tin.tx_bytes,
+			 txqi->tin.tx_packets);
+
+	return len;
+}
+IEEE80211_IF_FILE_R(txq);
 
 /* STA attributes */
 IEEE80211_IF_FILE(bssid, u.mgd.bssid, MAC);
@@ -618,6 +643,7 @@ static void add_common_files(struct ieee80211_sub_if_data *sdata)
 	DEBUGFS_ADD(rc_rateidx_vht_mcs_mask_2ghz);
 	DEBUGFS_ADD(rc_rateidx_vht_mcs_mask_5ghz);
 	DEBUGFS_ADD(hw_queues);
+	DEBUGFS_ADD(txq);
 }
 
 static void add_sta_files(struct ieee80211_sub_if_data *sdata)

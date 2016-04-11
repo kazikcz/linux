@@ -31,6 +31,30 @@ int mac80211_format_buffer(char __user *userbuf, size_t count,
 	return simple_read_from_buffer(userbuf, count, ppos, buf, res);
 }
 
+static int mac80211_parse_buffer(const char __user *userbuf,
+				 size_t count,
+				 loff_t *ppos,
+				 char *fmt, ...)
+{
+	va_list args;
+	char buf[DEBUGFS_FORMAT_BUFFER_SIZE] = {};
+	int res;
+
+	if (count > sizeof(buf))
+		return -EINVAL;
+
+	if (copy_from_user(buf, userbuf, count))
+		return -EFAULT;
+
+	buf[sizeof(buf) - 1] = '\0';
+
+	va_start(args, fmt);
+	res = vsscanf(buf, fmt, args);
+	va_end(args);
+
+	return count;
+}
+
 #define DEBUGFS_READONLY_FILE_FN(name, fmt, value...)			\
 static ssize_t name## _read(struct file *file, char __user *userbuf,	\
 			    size_t count, loff_t *ppos)			\
@@ -69,6 +93,52 @@ DEBUGFS_READONLY_FILE(wep_iv, "%#08x",
 		      local->wep_iv & 0xffffff);
 DEBUGFS_READONLY_FILE(rate_ctrl_alg, "%s",
 	local->rate_ctrl ? local->rate_ctrl->ops->name : "hw/driver");
+
+#define DEBUGFS_RW_FILE_FN(name, expr)				\
+static ssize_t name## _write(struct file *file,			\
+			     const char __user *userbuf,	\
+			     size_t count,			\
+			     loff_t *ppos)			\
+{								\
+	struct ieee80211_local *local = file->private_data;	\
+	return expr;						\
+}
+
+#define DEBUGFS_RW_FILE(name, expr, fmt, value...)	\
+	DEBUGFS_READONLY_FILE_FN(name, fmt, value)	\
+	DEBUGFS_RW_FILE_FN(name, expr)			\
+	DEBUGFS_RW_FILE_OPS(name)
+
+#define DEBUGFS_RW_FILE_OPS(name)			\
+static const struct file_operations name## _ops = {	\
+	.read = name## _read,				\
+	.write = name## _write,				\
+	.open = simple_open,				\
+	.llseek = generic_file_llseek,			\
+}
+
+#define DEBUGFS_RW_EXPR_FQ(args...)					\
+({									\
+	int res;							\
+	res = mac80211_parse_buffer(userbuf, count, ppos, args);	\
+	res;								\
+})
+
+DEBUGFS_READONLY_FILE(fq_flows_cnt, "%u",
+		      local->fq.flows_cnt);
+DEBUGFS_READONLY_FILE(fq_backlog, "%u",
+		      local->fq.backlog);
+DEBUGFS_READONLY_FILE(fq_overlimit, "%u",
+		      local->fq.overlimit);
+DEBUGFS_READONLY_FILE(fq_collisions, "%u",
+		      local->fq.collisions);
+
+DEBUGFS_RW_FILE(fq_limit,
+		DEBUGFS_RW_EXPR_FQ("%u", &local->fq.limit),
+		"%u", local->fq.limit);
+DEBUGFS_RW_FILE(fq_quantum,
+		DEBUGFS_RW_EXPR_FQ("%u", &local->fq.quantum),
+		"%u", local->fq.quantum);
 
 #ifdef CONFIG_PM
 static ssize_t reset_write(struct file *file, const char __user *user_buf,
@@ -256,6 +326,13 @@ void debugfs_hw_add(struct ieee80211_local *local)
 	DEBUGFS_ADD(hwflags);
 	DEBUGFS_ADD(user_power);
 	DEBUGFS_ADD(power);
+
+	DEBUGFS_ADD(fq_flows_cnt);
+	DEBUGFS_ADD(fq_backlog);
+	DEBUGFS_ADD(fq_overlimit);
+	DEBUGFS_ADD(fq_collisions);
+	DEBUGFS_ADD(fq_limit);
+	DEBUGFS_ADD(fq_quantum);
 
 	statsd = debugfs_create_dir("statistics", phyd);
 
