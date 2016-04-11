@@ -17,6 +17,7 @@
 #include <linux/slab.h>
 #include <linux/skbuff.h>
 #include <linux/etherdevice.h>
+#include <linux/moduleparam.h>
 #include <linux/bitmap.h>
 #include <linux/rcupdate.h>
 #include <linux/export.h>
@@ -35,6 +36,11 @@
 #include "wpa.h"
 #include "wme.h"
 #include "rate.h"
+
+static unsigned int fq_flows_cnt = 4096;
+module_param(fq_flows_cnt, uint, 0644);
+MODULE_PARM_DESC(fq_flows_cnt,
+		 "Maximum number of txq fair queuing flows. ");
 
 /* misc utils */
 
@@ -1346,7 +1352,7 @@ int ieee80211_txq_setup_flows(struct ieee80211_local *local)
 	if (!local->ops->wake_tx_queue)
 		return 0;
 
-	ret = fq_init(fq, 4096);
+	ret = fq_init(fq, max_t(u32, fq_flows_cnt, 1));
 	if (ret)
 		return ret;
 
