@@ -124,6 +124,15 @@ static const struct file_operations name## _ops = {	\
 	res;								\
 })
 
+#define DEBUGFS_RW_BOOL(arg)						\
+({									\
+	int res;							\
+	int val;							\
+	res = mac80211_parse_buffer(userbuf, count, ppos, "%d", &val);	\
+	arg = !!(val);							\
+	res;								\
+})
+
 DEBUGFS_READONLY_FILE(fq_flows_cnt, "%u",
 		      local->fq.flows_cnt);
 DEBUGFS_READONLY_FILE(fq_backlog, "%u",
@@ -132,6 +141,16 @@ DEBUGFS_READONLY_FILE(fq_overlimit, "%u",
 		      local->fq.overlimit);
 DEBUGFS_READONLY_FILE(fq_collisions, "%u",
 		      local->fq.collisions);
+DEBUGFS_READONLY_FILE(codel_maxpacket, "%u",
+		      local->cstats.maxpacket);
+DEBUGFS_READONLY_FILE(codel_drop_count, "%u",
+		      local->cstats.drop_count);
+DEBUGFS_READONLY_FILE(codel_drop_len, "%u",
+		      local->cstats.drop_len);
+DEBUGFS_READONLY_FILE(codel_ecn_mark, "%u",
+		      local->cstats.ecn_mark);
+DEBUGFS_READONLY_FILE(codel_ce_mark, "%u",
+		      local->cstats.ce_mark);
 
 DEBUGFS_RW_FILE(fq_limit,
 		DEBUGFS_RW_EXPR_FQ("%u", &local->fq.limit),
@@ -139,6 +158,18 @@ DEBUGFS_RW_FILE(fq_limit,
 DEBUGFS_RW_FILE(fq_quantum,
 		DEBUGFS_RW_EXPR_FQ("%u", &local->fq.quantum),
 		"%u", local->fq.quantum);
+DEBUGFS_RW_FILE(codel_interval,
+		DEBUGFS_RW_EXPR_FQ("%u", &local->cparams.interval),
+		"%u", local->cparams.interval);
+DEBUGFS_RW_FILE(codel_target,
+		DEBUGFS_RW_EXPR_FQ("%u", &local->cparams.target),
+		"%u", local->cparams.target);
+DEBUGFS_RW_FILE(codel_mtu,
+		DEBUGFS_RW_EXPR_FQ("%u", &local->cparams.mtu),
+		"%u", local->cparams.mtu);
+DEBUGFS_RW_FILE(codel_ecn,
+		DEBUGFS_RW_BOOL(local->cparams.ecn),
+		"%d", local->cparams.ecn ? 1 : 0);
 
 #ifdef CONFIG_PM
 static ssize_t reset_write(struct file *file, const char __user *user_buf,
@@ -333,6 +364,15 @@ void debugfs_hw_add(struct ieee80211_local *local)
 	DEBUGFS_ADD(fq_collisions);
 	DEBUGFS_ADD(fq_limit);
 	DEBUGFS_ADD(fq_quantum);
+	DEBUGFS_ADD(codel_maxpacket);
+	DEBUGFS_ADD(codel_drop_count);
+	DEBUGFS_ADD(codel_drop_len);
+	DEBUGFS_ADD(codel_ecn_mark);
+	DEBUGFS_ADD(codel_ce_mark);
+	DEBUGFS_ADD(codel_interval);
+	DEBUGFS_ADD(codel_target);
+	DEBUGFS_ADD(codel_mtu);
+	DEBUGFS_ADD(codel_ecn);
 
 	statsd = debugfs_create_dir("statistics", phyd);
 
