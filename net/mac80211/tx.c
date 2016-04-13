@@ -1314,6 +1314,7 @@ static void codel_drop_fn(void *ctx,
 	local = vif_to_sdata(txqi->txq.vif)->local;
 	hw = &local->hw;
 
+	local->cdrop_count++;
 	ieee80211_free_txskb(hw, skb);
 }
 
@@ -1325,6 +1326,8 @@ static struct sk_buff *fq_tin_dequeue_fn(struct fq *fq,
 	struct txq_info *txqi;
 	struct codel_vars *cvars;
 	struct codel_params *cparams;
+	struct sk_buff *skb;
+	u16 ecn_mark;
 	bool overloaded;
 
 	local = container_of(fq, struct ieee80211_local, fq);
@@ -1339,13 +1342,17 @@ static struct sk_buff *fq_tin_dequeue_fn(struct fq *fq,
 	/* TODO */
 	overloaded = false;
 
-	return codel_dequeue(txqi,
-			     &flow->backlog,
-			     0,
-			     cvars,
-			     cparams,
-			     codel_get_time(),
-			     overloaded);
+	ecn_mark = cvars->ecn_mark;
+	skb = codel_dequeue(txqi,
+			    &flow->backlog,
+			    0,
+			    cvars,
+			    cparams,
+			    codel_get_time(),
+			    overloaded);
+	local->cecn_mark += cvars->ecn_mark - ecn_mark;
+
+	return skb;
 }
 
 static void fq_skb_free_fn(struct fq *fq,

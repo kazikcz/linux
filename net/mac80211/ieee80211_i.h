@@ -1112,6 +1112,8 @@ struct ieee80211_local {
 	struct fq fq;
 	struct codel_vars *cvars;
 	struct codel_params cparams;
+	unsigned int cdrop_count;
+	unsigned int cecn_mark;
 
 	const struct ieee80211_ops *ops;
 

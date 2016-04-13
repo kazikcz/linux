@@ -132,6 +132,10 @@ DEBUGFS_READONLY_FILE(fq_overlimit, "%u",
 		      local->fq.overlimit);
 DEBUGFS_READONLY_FILE(fq_collisions, "%u",
 		      local->fq.collisions);
+DEBUGFS_READONLY_FILE(codel_drop_count, "%u",
+		      local->cdrop_count);
+DEBUGFS_READONLY_FILE(codel_ecn_mark, "%u",
+		      local->cecn_mark);
 
 DEBUGFS_RW_FILE(fq_limit,
 		DEBUGFS_RW_EXPR_FQ("%u", &local->fq.limit),
@@ -139,6 +143,12 @@ DEBUGFS_RW_FILE(fq_limit,
 DEBUGFS_RW_FILE(fq_quantum,
 		DEBUGFS_RW_EXPR_FQ("%u", &local->fq.quantum),
 		"%u", local->fq.quantum);
+DEBUGFS_RW_FILE(codel_interval,
+		DEBUGFS_RW_EXPR_FQ("%llu", &local->cparams.interval),
+		"%llu", local->cparams.interval);
+DEBUGFS_RW_FILE(codel_target,
+		DEBUGFS_RW_EXPR_FQ("%llu", &local->cparams.target),
+		"%llu", local->cparams.target);
 
 #ifdef CONFIG_PM
 static ssize_t reset_write(struct file *file, const char __user *user_buf,
@@ -330,6 +340,10 @@ void debugfs_hw_add(struct ieee80211_local *local)
 	DEBUGFS_ADD(fq_collisions);
 	DEBUGFS_ADD(fq_limit);
 	DEBUGFS_ADD(fq_quantum);
+	DEBUGFS_ADD(codel_interval);
+	DEBUGFS_ADD(codel_target);
+	DEBUGFS_ADD(codel_drop_count);
+	DEBUGFS_ADD(codel_ecn_mark);
 
 	statsd = debugfs_create_dir("statistics", phyd);
 
