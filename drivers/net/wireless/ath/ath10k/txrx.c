@@ -50,7 +50,8 @@ out:
 }
 
 int ath10k_txrx_tx_unref(struct ath10k_htt *htt,
-			 const struct htt_tx_done *tx_done)
+			 const struct htt_tx_done *tx_done,
+			 struct list_head *completed_list)
 {
 	struct ath10k *ar = htt->ar;
 	struct device *dev = ar->dev;
@@ -83,8 +84,12 @@ int ath10k_txrx_tx_unref(struct ath10k_htt *htt,
 	txq = skb_cb->txq;
 	artxq = (void *)txq->drv_priv;
 
-	if (txq)
+	if (txq) {
 		artxq->num_fw_queued--;
+		artxq->completed += msdu->len;
+		if (completed_list && list_empty(&artxq->completed_list))
+			list_add_tail(&artxq->completed_list, completed_list);
+	}
 
 	ath10k_htt_tx_free_msdu_id(htt, tx_done->msdu_id);
 	ath10k_htt_tx_dec_pending(htt);

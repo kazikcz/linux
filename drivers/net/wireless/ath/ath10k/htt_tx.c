@@ -379,7 +379,7 @@ static int ath10k_htt_tx_clean_up_pending(int msdu_id, void *skb, void *ctx)
 	tx_done.msdu_id = msdu_id;
 	tx_done.status = HTT_TX_COMPL_STATE_DISCARD;
 
-	ath10k_txrx_tx_unref(htt, &tx_done);
+	ath10k_txrx_tx_unref(htt, &tx_done, NULL);
 
 	return 0;
 }
@@ -841,12 +841,14 @@ int ath10k_htt_tx(struct ath10k_htt *htt, enum ath10k_hw_txrx_mode txmode,
 	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)msdu->data;
 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(msdu);
 	struct ath10k_skb_cb *skb_cb = ATH10K_SKB_CB(msdu);
+	struct ath10k_txq *artxq = (void *)skb_cb->txq->drv_priv;
 	struct ath10k_hif_sg_item sg_items[2];
 	struct ath10k_htt_txbuf *txbuf;
 	struct htt_data_tx_desc_frag *frags;
 	bool is_eth = (txmode == ATH10K_HW_TXRX_ETHERNET);
 	u8 vdev_id = ath10k_htt_tx_get_vdev_id(ar, msdu);
 	u8 tid = ath10k_htt_tx_get_tid(msdu, is_eth);
+	size_t msdu_len;
 	int prefetch_len;
 	int res;
 	u8 flags0 = 0;
@@ -1015,11 +1017,16 @@ int ath10k_htt_tx(struct ath10k_htt *htt, enum ath10k_hw_txrx_mode txmode,
 	sg_items[1].paddr = skb_cb->paddr;
 	sg_items[1].len = prefetch_len;
 
+	msdu_len = msdu->len;
+
 	res = ath10k_hif_tx_sg(htt->ar,
 			       htt->ar->htc.endpoint[htt->eid].ul_pipe_id,
 			       sg_items, ARRAY_SIZE(sg_items));
 	if (res)
 		goto err_unmap_msdu;
+
+	if (skb_cb->txq)
+		dql_queued(&artxq->dql, msdu_len);
 
 	return 0;
 

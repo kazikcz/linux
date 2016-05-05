@@ -1635,7 +1635,7 @@ static void ath10k_htt_rx_tx_compl_ind(struct ath10k *ar,
 		if (!kfifo_put(&htt->txdone_fifo, tx_done)) {
 			ath10k_warn(ar, "txdone fifo overrun, msdu_id %d status %d\n",
 				    tx_done.msdu_id, tx_done.status);
-			ath10k_txrx_tx_unref(htt, &tx_done);
+			ath10k_txrx_tx_unref(htt, &tx_done, NULL);
 		}
 	}
 }
@@ -2285,7 +2285,7 @@ bool ath10k_htt_t2h_msg_handler(struct ath10k *ar, struct sk_buff *skb)
 			break;
 		}
 
-		status = ath10k_txrx_tx_unref(htt, &tx_done);
+		status = ath10k_txrx_tx_unref(htt, &tx_done, NULL);
 		if (!status) {
 			spin_lock_bh(&htt->tx_lock);
 			ath10k_htt_tx_mgmt_dec_pending(htt);
@@ -2410,10 +2410,12 @@ static void ath10k_htt_txrx_compl_task(unsigned long ptr)
 {
 	struct ath10k_htt *htt = (struct ath10k_htt *)ptr;
 	struct ath10k *ar = htt->ar;
+	struct ath10k_txq *artxq;
 	struct htt_tx_done tx_done = {};
 	struct sk_buff_head rx_ind_q;
 	struct sk_buff_head tx_ind_q;
 	struct sk_buff *skb;
+	struct list_head completed_list;
 	unsigned long flags;
 	int num_mpdus;
 
@@ -2428,13 +2430,26 @@ static void ath10k_htt_txrx_compl_task(unsigned long ptr)
 	skb_queue_splice_init(&htt->tx_fetch_ind_q, &tx_ind_q);
 	spin_unlock_irqrestore(&htt->tx_fetch_ind_q.lock, flags);
 
+	INIT_LIST_HEAD(&completed_list);
+
 	/* kfifo_get: called only within txrx_tasklet so it's neatly serialized.
 	 * From kfifo_get() documentation:
 	 *  Note that with only one concurrent reader and one concurrent writer,
 	 *  you don't need extra locking to use these macro.
 	 */
 	while (kfifo_get(&htt->txdone_fifo, &tx_done))
-		ath10k_txrx_tx_unref(htt, &tx_done);
+		ath10k_txrx_tx_unref(htt, &tx_done, &completed_list);
+
+	while (!list_empty(&completed_list)) {
+		artxq = list_first_entry(&completed_list, struct ath10k_txq,
+					 completed_list);
+		list_del_init(&artxq->completed_list);
+
+		spin_lock_bh(&htt->tx_lock);
+		dql_completed(&artxq->dql, artxq->completed);
+		artxq->completed = 0;
+		spin_unlock_bh(&htt->tx_lock);
+	}
 
 	while ((skb = __skb_dequeue(&tx_ind_q))) {
 		ath10k_htt_rx_tx_fetch_ind(ar, skb);

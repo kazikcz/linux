@@ -3652,6 +3652,8 @@ static void ath10k_mac_txq_init(struct ieee80211_txq *txq)
 		return;
 
 	INIT_LIST_HEAD(&artxq->list);
+	INIT_LIST_HEAD(&artxq->completed_list);
+	dql_init(&artxq->dql, HZ);
 }
 
 static void ath10k_mac_txq_unref(struct ath10k *ar, struct ieee80211_txq *txq)
@@ -3776,40 +3778,81 @@ void ath10k_mac_tx_push_pending(struct ath10k *ar)
 {
 	struct ieee80211_hw *hw = ar->hw;
 	struct ieee80211_txq *txq;
+	struct list_head *list;
 	struct ath10k_txq *artxq;
-	struct ath10k_txq *last;
+	ktime_t now;
+	u64 sent;
+	s64 delta;
 	int ret;
-	int max;
-
-	if (ar->htt.num_pending_tx >= (ar->htt.max_num_pending_tx / 2))
-		return;
 
 	spin_lock_bh(&ar->txqs_lock);
 	rcu_read_lock();
 
-	last = list_last_entry(&ar->txqs, struct ath10k_txq, list);
-	while (!list_empty(&ar->txqs)) {
-		artxq = list_first_entry(&ar->txqs, struct ath10k_txq, list);
-		txq = container_of((void *)artxq, struct ieee80211_txq,
-				   drv_priv);
-
-		/* Prevent aggressive sta/tid taking over tx queue */
-		max = 16;
-		ret = 0;
-		while (ath10k_mac_tx_can_push(hw, txq) && max--) {
-			ret = ath10k_mac_tx_push_txq(hw, txq);
-			if (ret < 0)
+	for (;;) {
+		list = &ar->txqs_new;
+		if (list_empty(list)) {
+			list = &ar->txqs_old;
+			if (list_empty(list))
 				break;
 		}
 
-		list_del_init(&artxq->list);
-		if (ret != -ENOENT)
-			list_add_tail(&artxq->list, &ar->txqs);
-
-		ath10k_htt_tx_txq_update(hw, txq);
-
-		if (artxq == last || (ret < 0 && ret != -ENOENT))
+		artxq = list_first_entry_or_null(list, struct ath10k_txq, list);
+		if (!artxq)
 			break;
+
+		if (artxq->deficit <= 0) {
+			artxq->deficit += 300;
+			list_move_tail(&artxq->list, &ar->txqs_old);
+			continue;
+		}
+
+		if (ar->txq)
+			artxq = ar->txq;
+
+		txq = container_of((void *)artxq, struct ieee80211_txq, drv_priv);
+		ret = 0;
+		sent = 0;
+
+		if (ar->txq != artxq) {
+			artxq->tx_start = ktime_get_raw();
+
+			for (;;) {
+				if (dql_avail(&artxq->dql) < 0)
+					break;
+
+				if (!ath10k_mac_tx_can_push(hw, txq))
+					break;
+
+				ret = ath10k_mac_tx_push_txq(hw, txq);
+				if (ret < 0)
+					break;
+
+				sent += ret;
+			}
+
+			ath10k_htt_tx_txq_update(hw, txq);
+
+			if (ret == -ENOENT && !sent) {
+				list_del_init(&artxq->list);
+				continue;
+			}
+
+			ar->txq = artxq;
+		}
+
+		if (artxq->num_fw_queued == 0) {
+			now = ktime_get_raw();
+			delta = ktime_us_delta(now, artxq->tx_start);
+			artxq->tx_start = now;
+			artxq->deficit -= delta;
+			ar->txq = NULL;
+			printk("txq %pM delta %llu usec\n",
+					txq->sta ? txq->sta->addr : txq->vif->addr,
+					delta);
+		}
+
+		list_move_tail(&artxq->list, &ar->txqs_old);
+		break;
 	}
 
 	rcu_read_unlock();
@@ -4050,8 +4093,10 @@ static void ath10k_mac_op_wake_tx_queue(struct ieee80211_hw *hw,
 	struct ath10k_txq *artxq = (void *)txq->drv_priv;
 
 	spin_lock_bh(&ar->txqs_lock);
-	if (list_empty(&artxq->list))
-		list_add_tail(&artxq->list, &ar->txqs);
+	if (list_empty(&artxq->list)) {
+		list_add_tail(&artxq->list, &ar->txqs_new);
+		artxq->deficit = 300;
+	}
 	spin_unlock_bh(&ar->txqs_lock);
 
 	ath10k_mac_tx_push_pending(ar);

@@ -310,8 +310,13 @@ struct ath10k_peer {
 
 struct ath10k_txq {
 	struct list_head list;
+	struct list_head completed_list;
+	struct dql dql;
+	ktime_t tx_start;
 	unsigned long num_fw_queued;
 	unsigned long num_push_allowed;
+	unsigned int completed; /* protected by: htt->tx_lock */
+	s64 deficit;
 };
 
 struct ath10k_sta {
@@ -830,7 +835,9 @@ struct ath10k {
 	/* protects: ar->txqs, artxq->list */
 	spinlock_t txqs_lock;
 
-	struct list_head txqs;
+	struct ath10k_txq *txq;
+	struct list_head txqs_new;
+	struct list_head txqs_old;
 	struct list_head arvifs;
 	struct list_head peers;
 	struct ath10k_peer *peer_map[ATH10K_MAX_NUM_PEER_IDS];
