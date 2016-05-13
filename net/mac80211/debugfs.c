@@ -126,13 +126,31 @@ static int aqm_open(struct inode *inode, struct file *file)
 			 "R fq_overlimit %u\n"
 			 "R fq_collisions %u\n"
 			 "RW fq_limit %u\n"
-			 "RW fq_quantum %u\n",
+			 "RW fq_quantum %u\n"
+			 "R codel_maxpacket %u\n"
+			 "R codel_drop_count %u\n"
+			 "R codel_drop_len %u\n"
+			 "R codel_ecn_mark %u\n"
+			 "R codel_ce_mark %u\n"
+			 "RW codel_interval %u\n"
+			 "RW codel_target %u\n"
+			 "RW codel_mtu %u\n"
+			 "RW codel_ecn %u\n",
 			 fq->flows_cnt,
 			 fq->backlog,
 			 fq->overlimit,
 			 fq->collisions,
 			 fq->limit,
-			 fq->quantum);
+			 fq->quantum,
+			 local->cstats.maxpacket,
+			 local->cstats.drop_count,
+			 local->cstats.drop_len,
+			 local->cstats.ecn_mark,
+			 local->cstats.ce_mark,
+			 local->cparams.interval,
+			 local->cparams.target,
+			 local->cparams.mtu,
+			 local->cparams.ecn ? 1U : 0U);
 
 	len += scnprintf(info->buf + len,
 			 info->size - len,
@@ -214,6 +232,7 @@ static ssize_t aqm_write(struct file *file,
 	struct ieee80211_local *local = info->local;
 	char buf[100];
 	size_t len;
+	unsigned int ecn;
 
 	if (count > sizeof(buf))
 		return -EINVAL;
@@ -230,6 +249,16 @@ static ssize_t aqm_write(struct file *file,
 		return count;
 	else if (sscanf(buf, "fq_quantum %u", &local->fq.quantum) == 1)
 		return count;
+	else if (sscanf(buf, "codel_interval %u", &local->cparams.interval) == 1)
+		return count;
+	else if (sscanf(buf, "codel_target %u", &local->cparams.target) == 1)
+		return count;
+	else if (sscanf(buf, "codel_mtu %u", &local->cparams.mtu) == 1)
+		return count;
+	else if (sscanf(buf, "codel_ecn %u", &ecn) == 1) {
+		local->cparams.ecn = !!ecn;
+		return count;
+	}
 
 	return -EINVAL;
 }
